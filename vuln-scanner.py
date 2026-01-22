@@ -2324,8 +2324,20 @@ Examples:
         print(f"[!] Error: Target not found: {args.target}")
         return 1
     
+    # ASCII Banner
+    banner = """
+░█░█░█▀█░█▀▄░█░░░█▀▄░▀█▀░█▀▄░█▀▀░█▀▀░█▀▄░█▀█░█░█
+░█▄█░█░█░█▀▄░█░░░█░█░░█░░█▀▄░█▀▀░█▀▀░█▀▄░█░█░░█░
+░▀░▀░▀▀▀░▀░▀░▀▀▀░▀▀░░░▀░░▀░▀░▀▀▀░▀▀▀░▀▀░░▀▀▀░░▀░
+        ╔═╗┌─┐┌─┐┬ ┬┬─┐┬┌┬┐┬ ┬  ╔═╗┌─┐┌─┐┌┐┌┌┐┌┌─┐┬─┐
+        ╚═╗├┤ │  │ │├┬┘│ │ └┬┘  ╚═╗│  ├─┤││││││├┤ ├┬┘
+        ╚═╝└─┘└─┘└─┘┴└─┴ ┴  ┴   ╚═╝└─┘┴ ┴┘└┘┘└┘└─┘┴└─
+                Source Code Security Scanner v3.0
+                      by worldtreeboy
+    """
+    print(banner)
+    
     current_platform = get_platform()
-    print(f"[*] Vulnerability Scanner v3.0")
     print(f"[*] Platform: {current_platform.upper()}")
     print(f"[*] Target: {args.target}")
     print(f"[*] Categories: {', '.join(args.category)}")
