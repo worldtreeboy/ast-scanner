@@ -1,44 +1,55 @@
-# 🔍 .NET Vulnerability Scanner
+# 🔍 Vulnerability Scanner
 
-A cross-platform static analysis tool for detecting security vulnerabilities in .NET applications, with support for DLL/EXE binary analysis.
+A cross-platform static analysis tool for detecting security vulnerabilities in web applications and binaries. Supports multiple languages including C#, Python, JavaScript, PHP, Java, Ruby, and Go.
 
 > **Built with [Claude](https://claude.ai)** - Anthropic's AI assistant
 
 ## Features
 
+- **Multi-Language**: Supports C#, Python, JavaScript/TypeScript, PHP, Java, Ruby, Go, Kotlin, Scala
 - **Cross-Platform**: Works on Windows and Kali Linux
-- **Binary Analysis**: Scan DLL/EXE files using string extraction
+- **Binary Analysis**: Scan DLL/EXE/SO files using string extraction
 - **.NET Decompilation**: Optional ILSpy/dnSpy integration for deeper analysis
 - **Archive Support**: Scan JAR, WAR, APK, ZIP, NuGet packages
 - **Multiple Output Formats**: Text, JSON
 
 ## Vulnerabilities Detected
 
-### Deserialization (Critical)
-| Function | Library |
-|----------|---------|
-| `BinaryFormatter.Deserialize()` | Microsoft |
-| `NetDataContractSerializer.ReadObject()` | Microsoft |
-| `ObjectStateFormatter.Deserialize()` | Microsoft |
-| `LosFormatter.Deserialize()` | Microsoft |
-| `SoapFormatter.Deserialize()` | Microsoft |
-| `JavaScriptSerializer.Deserialize()` | Microsoft |
-| `XmlSerializer.Deserialize()` | Microsoft |
-| `XamlReader.Load/Parse()` | Microsoft |
-| `JsonConvert.DeserializeObject()` | Newtonsoft |
-| `TypeNameHandling.All/Auto/Objects/Arrays` | Newtonsoft |
-| `JSON.ToObject()` | fastJSON |
-| `Deserializer.Deserialize<>()` | YamlDotNet |
-| `DataContractSerializer.ReadObject()` | Microsoft |
+### Insecure Deserialization
+
+| Language | Dangerous Functions |
+|----------|---------------------|
+| **C#** | `BinaryFormatter`, `NetDataContractSerializer`, `ObjectStateFormatter`, `LosFormatter`, `SoapFormatter`, `JavaScriptSerializer`, `XmlSerializer`, `XamlReader`, `JsonConvert.DeserializeObject` (with TypeNameHandling), `fastJSON`, `YamlDotNet`, `DataContractSerializer` |
+| **Python** | `pickle.loads()`, `yaml.load()`, `shelve.open()`, `dill.loads()` |
+| **PHP** | `unserialize()`, `phar://` |
+| **Java** | `ObjectInputStream.readObject()`, `XMLDecoder`, `XStream`, `SnakeYAML` |
+| **Ruby** | `Marshal.load()`, `YAML.load()` |
+| **Node.js** | `node-serialize`, `serialize-javascript` |
+
+### SQL Injection
+| Language | Patterns Detected |
+|----------|-------------------|
+| **All** | String concatenation, template literals, format strings |
+| **C#** | `SqlCommand`, `FromSqlRaw`, `ExecuteSqlRaw`, Dapper raw queries |
+| **Python** | f-strings in queries, `.format()`, `%` formatting |
+| **PHP** | `mysql_query()`, `mysqli_query()` with variables |
+| **Java** | `executeQuery()` with concatenation |
+| **Node.js** | `sequelize.query()`, `knex.raw()`, `prisma.$queryRaw` |
+
+### Code Injection (eval)
+| Language | Dangerous Functions |
+|----------|---------------------|
+| **JavaScript** | `eval()`, `new Function()`, `setTimeout/setInterval` with strings |
+| **Python** | `eval()`, `exec()`, `compile()` |
+| **PHP** | `eval()`, `assert()`, `create_function()`, `preg_replace` with /e |
+| **C#** | `CSharpCodeProvider`, dynamic compilation |
 
 ### Other Vulnerabilities
-- **SQL Injection** - String concatenation, raw queries, EF Core raw SQL
-- **NoSQL Injection** - MongoDB, Redis
-- **XPath Injection** - Dynamic XPath queries
-- **SSTI** - Server-side template injection (Razor, Jinja2, Twig, etc.)
-- **SSRF** - Server-side request forgery
-- **Code Injection** - `eval()`, `new Function()`, dynamic compilation
-- **Authentication Bypass** - Hardcoded credentials, JWT issues
+- **NoSQL Injection** - MongoDB `$where`, operator injection, Redis
+- **XPath Injection** - Dynamic XPath queries in all languages
+- **SSTI** - Jinja2, Django, Twig, Smarty, Pug, EJS, Handlebars, Razor, Freemarker, Thymeleaf, ERB
+- **SSRF** - `requests`, `urllib`, `file_get_contents`, `curl`, `HttpClient`, `axios`, `fetch`
+- **Authentication Bypass** - Hardcoded credentials, JWT none algorithm, weak comparisons
 
 ## Installation
 
