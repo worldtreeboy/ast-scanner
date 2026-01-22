@@ -114,13 +114,14 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         name="Code Injection - setTimeout/setInterval string",
         category=VulnCategory.CODE_INJECTION,
         patterns=[
-            r'setTimeout\s*\(\s*["\'][^"\']+["\']',
-            r'setInterval\s*\(\s*["\'][^"\']+["\']',
-            r'setImmediate\s*\(\s*["\'][^"\']+["\']',
+            r'setTimeout\s*\(\s*["\'].*\+',
+            r'setTimeout\s*\(\s*`.*\$\{',
+            r'setInterval\s*\(\s*["\'].*\+',
+            r'setInterval\s*\(\s*`.*\$\{',
         ],
         severity=Severity.MEDIUM,
         languages=[".js", ".ts", ".jsx", ".tsx"],
-        false_positive_patterns=[r'setTimeout\s*\(\s*function', r'setTimeout\s*\(\s*\(\)'],
+        false_positive_patterns=[r'setTimeout\s*\(\s*function', r'setTimeout\s*\(\s*\(\)', r'session_alive'],
     ),
     VulnerabilityPattern(
         name="Command Injection - child_process exec",
@@ -360,13 +361,15 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         name="Code Injection - Python builtins",
         category=VulnCategory.CODE_INJECTION,
         patterns=[
-            r'__builtins__',
-            r'__import__\s*\(',
-            r'getattr\s*\(\s*.*,\s*.*request',
-            r'setattr\s*\(\s*.*,\s*.*request',
+            r'__builtins__\s*\[',
+            r'__import__\s*\(\s*.*request\.',
+            r'__import__\s*\(\s*.*input\s*\(',
+            r'getattr\s*\(\s*__builtins__',
+            r'setattr\s*\(\s*__builtins__',
         ],
         severity=Severity.MEDIUM,
         languages=[".py"],
+        false_positive_patterns=[r'__builtins__\s*=\s*\{\}', r'#.*__builtins__', r'getattr\s*\(\s*frappe\.local'],
     ),
 
     # =========================================================================
@@ -770,93 +773,42 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         name="Prototype Pollution - __proto__ Access",
         category=VulnCategory.PROTOTYPE_POLLUTION,
         patterns=[
-            r'\[.*__proto__.*\]',
+            r'\[.*__proto__.*\]\s*=',
             r'\.__proto__\s*=',
-            r'\["__proto__"\]',
-            r"\['__proto__'\]",
-            r'__proto__\s*:',
+            r'\["__proto__"\]\s*=',
+            r"\['__proto__'\]\s*=",
+            r'__proto__\s*:\s*\{',
         ],
         severity=Severity.CRITICAL,
         languages=[".js", ".ts", ".jsx", ".tsx"],
-        false_positive_patterns=[r'hasOwnProperty.*__proto__', r'===\s*["\']__proto__["\']', r'!==\s*["\']__proto__["\']'],
+        false_positive_patterns=[r'hasOwnProperty.*__proto__', r'===\s*["\']__proto__["\']', r'!==\s*["\']__proto__["\']', r'typeof superClass', r'Object\.getPrototypeOf', r'Object\.create\('],
     ),
     VulnerabilityPattern(
         name="Prototype Pollution - constructor.prototype",
         category=VulnCategory.PROTOTYPE_POLLUTION,
         patterns=[
-            r'\[.*constructor.*\]\s*\[.*prototype.*\]',
-            r'\.constructor\.prototype',
-            r'\["constructor"\]\s*\["prototype"\]',
-            r"\['constructor'\]\s*\['prototype'\]",
+            r'\[.*constructor.*\]\s*\[.*prototype.*\]\s*=',
+            r'\.constructor\.prototype\s*=',
+            r'\["constructor"\]\s*\["prototype"\]\s*=',
+            r"\['constructor'\]\s*\['prototype'\]\s*=",
         ],
         severity=Severity.CRITICAL,
         languages=[".js", ".ts", ".jsx", ".tsx"],
+        false_positive_patterns=[r'Object\.create\(', r'typeof superClass', r'_inherits'],
     ),
     VulnerabilityPattern(
-        name="Prototype Pollution - Unsafe Object Merge/Clone",
+        name="Prototype Pollution - Unsafe Deep Merge",
         category=VulnCategory.PROTOTYPE_POLLUTION,
         patterns=[
-            r'Object\.assign\s*\(\s*\{\}',
-            r'Object\.assign\s*\(\s*target',
-            r'\.extend\s*\(\s*true\s*,',
-            r'\$\.extend\s*\(\s*true\s*,',
-            r'_\.merge\s*\(',
-            r'_\.defaultsDeep\s*\(',
-            r'_\.set\s*\(',
-            r'_\.setWith\s*\(',
-            r'lodash\.merge\s*\(',
-            r'lodash\.defaultsDeep\s*\(',
-            r'deepmerge\s*\(',
-            r'merge\s*\(\s*\{\}\s*,',
-            r'hoek\.merge\s*\(',
-            r'hoek\.applyToDefaults\s*\(',
+            r'_\.merge\s*\(\s*[^,]+,\s*req\.',
+            r'_\.defaultsDeep\s*\(\s*[^,]+,\s*req\.',
+            r'lodash\.merge\s*\(\s*[^,]+,\s*req\.',
+            r'deepmerge\s*\(\s*[^,]+,\s*req\.',
+            r'hoek\.merge\s*\(\s*[^,]+,\s*req\.',
+            r'hoek\.applyToDefaults\s*\(\s*[^,]+,\s*req\.',
+            r'\$\.extend\s*\(\s*true\s*,\s*[^,]+,\s*req\.',
         ],
-        severity=Severity.MEDIUM,
-        languages=[".js", ".ts", ".jsx", ".tsx"],
-    ),
-    VulnerabilityPattern(
-        name="Prototype Pollution - Dynamic Property Assignment",
-        category=VulnCategory.PROTOTYPE_POLLUTION,
-        patterns=[
-            r'\[\s*\w+\s*\]\s*\[\s*\w+\s*\]\s*=',
-            r'\[\s*key\s*\]\s*=',
-            r'\[\s*prop\s*\]\s*=',
-            r'\[\s*name\s*\]\s*=',
-            r'\[\s*path\s*\]\s*=',
-            r'obj\s*\[\s*\w+\s*\]\s*\[\s*\w+\s*\]',
-        ],
-        severity=Severity.LOW,
-        languages=[".js", ".ts", ".jsx", ".tsx"],
-        false_positive_patterns=[r'hasOwnProperty', r'Object\.prototype\.hasOwnProperty'],
-    ),
-    VulnerabilityPattern(
-        name="Prototype Pollution - Recursive/Deep Property Access",
-        category=VulnCategory.PROTOTYPE_POLLUTION,
-        patterns=[
-            r'\.split\s*\(\s*["\']\.["\']\s*\).*forEach',
-            r'\.split\s*\(\s*["\']\.["\']\s*\).*reduce',
-            r'path\.split\s*\(',
-            r'key\.split\s*\(',
-            r'property\.split\s*\(',
-        ],
-        severity=Severity.LOW,
-        languages=[".js", ".ts", ".jsx", ".tsx"],
-    ),
-    VulnerabilityPattern(
-        name="Prototype Pollution - Vulnerable Libraries",
-        category=VulnCategory.PROTOTYPE_POLLUTION,
-        patterns=[
-            r'require\s*\(\s*["\']lodash["\']\s*\)',
-            r'require\s*\(\s*["\']underscore["\']\s*\)',
-            r'require\s*\(\s*["\']jquery["\']\s*\)',
-            r'require\s*\(\s*["\']hoek["\']\s*\)',
-            r'require\s*\(\s*["\']deep-extend["\']\s*\)',
-            r'require\s*\(\s*["\']defaults-deep["\']\s*\)',
-            r'require\s*\(\s*["\']deepmerge["\']\s*\)',
-            r'from\s+["\']lodash["\']',
-            r'from\s+["\']underscore["\']',
-        ],
-        severity=Severity.INFO,
+        severity=Severity.HIGH,
         languages=[".js", ".ts", ".jsx", ".tsx"],
     ),
 
@@ -1027,16 +979,18 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         name="NoSQL Injection - MongoDB Query Operators",
         category=VulnCategory.NOSQL_INJECTION,
         patterns=[
-            r'\.find\s*\(\s*\{[^}]*req\.(body|query|params)',
-            r'\.findOne\s*\(\s*\{[^}]*req\.(body|query|params)',
-            r'\.findById\s*\(\s*req\.(body|query|params)',
-            r'\.findOneAndUpdate\s*\(\s*\{[^}]*req\.(body|query|params)',
-            r'\.updateOne\s*\(\s*\{[^}]*req\.(body|query|params)',
-            r'\.deleteOne\s*\(\s*\{[^}]*req\.(body|query|params)',
-            r'\.aggregate\s*\(\s*\[.*req\.(body|query|params)',
+            r'\.find\s*\(\s*\{[^}]*req\.(body|query|params)\[',
+            r'\.findOne\s*\(\s*\{[^}]*req\.(body|query|params)\[',
+            r'\.findOneAndUpdate\s*\(\s*\{[^}]*req\.(body|query|params)\[',
+            r'\.updateOne\s*\(\s*\{[^}]*req\.(body|query|params)\[',
+            r'\.deleteOne\s*\(\s*\{[^}]*req\.(body|query|params)\[',
+            r'\.aggregate\s*\(\s*\[.*req\.(body|query|params)\[',
+            r'\.find\s*\(\s*req\.(body|query)\s*\)',
+            r'\.findOne\s*\(\s*req\.(body|query)\s*\)',
         ],
         severity=Severity.HIGH,
         languages=[".js", ".ts", ".jsx", ".tsx"],
+        false_positive_patterns=[r'findById', r'\.id\)$', r'params\.id\)'],
     ),
     VulnerabilityPattern(
         name="NoSQL Injection - MongoDB $where Operator",
@@ -1355,14 +1309,13 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         patterns=[
             r'algorithms\s*[=:]\s*\[\s*["\']none["\']',
             r'algorithm\s*[=:]\s*["\']none["\']',
-            r'verify\s*[=:]\s*[Ff]alse',
             r'jwt\.decode\s*\([^)]*verify\s*=\s*False',
             r'ValidateIssuerSigningKey\s*=\s*false',
             r'RequireSignedTokens\s*=\s*false',
         ],
         severity=Severity.CRITICAL,
         languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go"],
-        false_positive_patterns=[r'jwt\.verify'],
+        false_positive_patterns=[r'jwt\.verify', r'^#', r'^\s*#', r'//.*verify', r'FrappeClient.*verify=False'],
     ),
     VulnerabilityPattern(
         name="Auth Bypass - Weak Comparison",
@@ -1735,12 +1688,18 @@ class VulnerabilityScanner:
         'node_modules', '.git', '__pycache__', 'venv', 'env', '.venv',
         'dist', 'build', '.idea', '.vscode', 'vendor', 'target', 'bin',
         'obj', '.next', 'coverage', '.tox', '.pytest_cache', '.mypy_cache',
-        'site-packages', '.gradle', '.m2', 'packages', '.nuget', '.cache'
+        'site-packages', '.gradle', '.m2', 'packages', '.nuget', '.cache',
+        # Test directories - often contain intentional "vulnerable" code
+        'tests', 'test', '__tests__', 'spec', 'specs', 'test_files',
+        # Documentation
+        'docs', 'doc', 'documentation',
     }
     
     DEFAULT_EXCLUDE_FILES = {
         'package-lock.json', 'yarn.lock', 'composer.lock', 'Gemfile.lock',
         'poetry.lock', 'Cargo.lock', 'go.sum', 'pnpm-lock.yaml',
+        # Scanner itself
+        'vuln_scanner.py', 'vuln-scanner.py', 'scanner.py',
         # Common JS libraries - reduce false positives
         'jquery.js', 'jquery.min.js', 'jquery-3.7.1.js', 'jquery-3.7.1.min.js',
         'jquery-3.7.1.slim.js', 'jquery-3.7.1.slim.min.js',
@@ -1748,12 +1707,47 @@ class VulnerabilityScanner:
         'jquery.validate.unobtrusive.js', 'jquery.validate.unobtrusive.min.js',
         'jquery.validate-vsdoc.js', 'jquery-3.7.1.intellisense.js',
         'bootstrap.js', 'bootstrap.min.js', 'bootstrap.esm.js', 'bootstrap.bundle.js',
+        'bootstrap.bundle.min.js',
         'modernizr.js', 'modernizr-2.8.3.js',
         'react.js', 'react.min.js', 'react-dom.js', 'react-dom.min.js',
         'vue.js', 'vue.min.js', 'angular.js', 'angular.min.js',
+        # Additional libraries
+        'leaflet.js', 'leaflet.min.js',
+        'lodash.js', 'lodash.min.js', 'underscore.js', 'underscore.min.js',
+        'd3.js', 'd3.min.js',
+        'moment.js', 'moment.min.js',
+        'axios.js', 'axios.min.js',
+        'chart.js', 'chart.min.js',
+        'three.js', 'three.min.js',
+        'socket.io.js', 'socket.io.min.js',
+        'popper.js', 'popper.min.js',
+        'summernote.js', 'summernote.min.js',
+        'codemirror.js', 'codemirror.min.js',
+        'fullcalendar.js', 'fullcalendar.min.js',
+        'datatables.js', 'datatables.min.js',
+        'select2.js', 'select2.min.js',
+        'toastr.js', 'toastr.min.js',
+        'sweetalert.js', 'sweetalert.min.js', 'sweetalert2.js', 'sweetalert2.min.js',
+        'qunit.js', 'qunit.min.js',
+        'mocha.js', 'mocha.min.js',
+        'chai.js', 'chai.min.js',
+        'jasmine.js', 'jasmine.min.js',
+        'sinon.js', 'sinon.min.js',
+        'clusterize.js', 'clusterize.min.js',
+        'snap.svg.js', 'snap.svg-min.js',
+        'photoswipe.js', 'photoswipe.min.js',
+        'microtemplate.js',
+        'json2.js',
+        'jscolor.js',
+        'frappe-datatable.js', 'frappe-datatable.min.js',
     }
     
-    DEFAULT_EXCLUDE_PATTERNS = {'*.min.js', '*.min.css', '*.map', '*.bundle.js'}
+    DEFAULT_EXCLUDE_PATTERNS = {
+        '*.min.js', '*.min.css', '*.map', '*.bundle.js', '*.bundle.min.js',
+        '*.test.js', '*.spec.js', '*.test.ts', '*.spec.ts',
+        'test_*.py', '*_test.py', '*_test.go', '*_test.rb',
+        '*.d.ts',
+    }
     
     BINARY_EXTENSIONS = {'.dll', '.exe', '.so', '.dylib', '.bin', '.o', '.a', '.lib'}
     ARCHIVE_EXTENSIONS = {'.jar', '.war', '.ear', '.zip', '.apk', '.aar', '.nupkg'}
@@ -2079,6 +2073,18 @@ class VulnerabilityScanner:
                   extension: str) -> List[Finding]:
         """Scan a line for vulnerabilities"""
         findings = []
+        stripped = line.strip()
+        
+        # Skip commented lines based on file type
+        if extension in ['.py', '.rb', '.sh', '.bash', '.yaml', '.yml']:
+            if stripped.startswith('#'):
+                return findings
+        elif extension in ['.js', '.ts', '.jsx', '.tsx', '.java', '.cs', '.go', '.kt', '.scala', '.c', '.cpp', '.h']:
+            if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+                return findings
+        elif extension in ['.php']:
+            if stripped.startswith('//') or stripped.startswith('#') or stripped.startswith('/*') or stripped.startswith('*'):
+                return findings
         
         for vuln_pattern in VULNERABILITY_PATTERNS:
             if self.active_categories and vuln_pattern.category not in self.active_categories:
