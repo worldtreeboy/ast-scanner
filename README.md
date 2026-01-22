@@ -47,6 +47,7 @@ A cross-platform static analysis tool for detecting security vulnerabilities in 
 ### Other Vulnerabilities
 - **NoSQL Injection** - MongoDB `$where`, operator injection, Redis
 - **XPath Injection** - Dynamic XPath queries in all languages
+- **Prototype Pollution** - `__proto__`, `constructor.prototype`, unsafe merge/extend (lodash, jQuery, hoek, deepmerge)
 - **SSTI** - Jinja2, Django, Twig, Smarty, Pug, EJS, Handlebars, Razor, Freemarker, Thymeleaf, ERB
 - **SSRF** - `requests`, `urllib`, `file_get_contents`, `curl`, `HttpClient`, `axios`, `fetch`
 - **Authentication Bypass** - Hardcoded credentials, JWT none algorithm, weak comparisons
@@ -102,7 +103,7 @@ python vuln_scanner.py ./bin --scan-binaries
 python vuln_scanner.py /path/to/project -c deserialization sql
 
 # Available categories:
-# sql, postgresql, nosql, xpath, deserialization, auth, ssti, ssrf, code, eval, all
+# sql, postgresql, nosql, xpath, deserialization, auth, ssti, ssrf, code, eval, prototype, all
 ```
 
 ### Output Options

@@ -50,6 +50,7 @@ class VulnCategory(Enum):
     SSTI = "Server-Side Template Injection"
     SSRF = "Server-Side Request Forgery"
     CODE_INJECTION = "Code Injection"
+    PROTOTYPE_POLLUTION = "Prototype Pollution"
     BINARY_SUSPECT = "Binary Analysis Finding"
 
 
@@ -759,6 +760,104 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         ],
         severity=Severity.HIGH,
         languages=[".sh", ".bash", ".zsh"],
+    ),
+
+    # =========================================================================
+    # PROTOTYPE POLLUTION PATTERNS
+    # =========================================================================
+    
+    VulnerabilityPattern(
+        name="Prototype Pollution - __proto__ Access",
+        category=VulnCategory.PROTOTYPE_POLLUTION,
+        patterns=[
+            r'\[.*__proto__.*\]',
+            r'\.__proto__\s*=',
+            r'\["__proto__"\]',
+            r"\['__proto__'\]",
+            r'__proto__\s*:',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".js", ".ts", ".jsx", ".tsx"],
+        false_positive_patterns=[r'hasOwnProperty.*__proto__', r'===\s*["\']__proto__["\']', r'!==\s*["\']__proto__["\']'],
+    ),
+    VulnerabilityPattern(
+        name="Prototype Pollution - constructor.prototype",
+        category=VulnCategory.PROTOTYPE_POLLUTION,
+        patterns=[
+            r'\[.*constructor.*\]\s*\[.*prototype.*\]',
+            r'\.constructor\.prototype',
+            r'\["constructor"\]\s*\["prototype"\]',
+            r"\['constructor'\]\s*\['prototype'\]",
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".js", ".ts", ".jsx", ".tsx"],
+    ),
+    VulnerabilityPattern(
+        name="Prototype Pollution - Unsafe Object Merge/Clone",
+        category=VulnCategory.PROTOTYPE_POLLUTION,
+        patterns=[
+            r'Object\.assign\s*\(\s*\{\}',
+            r'Object\.assign\s*\(\s*target',
+            r'\.extend\s*\(\s*true\s*,',
+            r'\$\.extend\s*\(\s*true\s*,',
+            r'_\.merge\s*\(',
+            r'_\.defaultsDeep\s*\(',
+            r'_\.set\s*\(',
+            r'_\.setWith\s*\(',
+            r'lodash\.merge\s*\(',
+            r'lodash\.defaultsDeep\s*\(',
+            r'deepmerge\s*\(',
+            r'merge\s*\(\s*\{\}\s*,',
+            r'hoek\.merge\s*\(',
+            r'hoek\.applyToDefaults\s*\(',
+        ],
+        severity=Severity.MEDIUM,
+        languages=[".js", ".ts", ".jsx", ".tsx"],
+    ),
+    VulnerabilityPattern(
+        name="Prototype Pollution - Dynamic Property Assignment",
+        category=VulnCategory.PROTOTYPE_POLLUTION,
+        patterns=[
+            r'\[\s*\w+\s*\]\s*\[\s*\w+\s*\]\s*=',
+            r'\[\s*key\s*\]\s*=',
+            r'\[\s*prop\s*\]\s*=',
+            r'\[\s*name\s*\]\s*=',
+            r'\[\s*path\s*\]\s*=',
+            r'obj\s*\[\s*\w+\s*\]\s*\[\s*\w+\s*\]',
+        ],
+        severity=Severity.LOW,
+        languages=[".js", ".ts", ".jsx", ".tsx"],
+        false_positive_patterns=[r'hasOwnProperty', r'Object\.prototype\.hasOwnProperty'],
+    ),
+    VulnerabilityPattern(
+        name="Prototype Pollution - Recursive/Deep Property Access",
+        category=VulnCategory.PROTOTYPE_POLLUTION,
+        patterns=[
+            r'\.split\s*\(\s*["\']\.["\']\s*\).*forEach',
+            r'\.split\s*\(\s*["\']\.["\']\s*\).*reduce',
+            r'path\.split\s*\(',
+            r'key\.split\s*\(',
+            r'property\.split\s*\(',
+        ],
+        severity=Severity.LOW,
+        languages=[".js", ".ts", ".jsx", ".tsx"],
+    ),
+    VulnerabilityPattern(
+        name="Prototype Pollution - Vulnerable Libraries",
+        category=VulnCategory.PROTOTYPE_POLLUTION,
+        patterns=[
+            r'require\s*\(\s*["\']lodash["\']\s*\)',
+            r'require\s*\(\s*["\']underscore["\']\s*\)',
+            r'require\s*\(\s*["\']jquery["\']\s*\)',
+            r'require\s*\(\s*["\']hoek["\']\s*\)',
+            r'require\s*\(\s*["\']deep-extend["\']\s*\)',
+            r'require\s*\(\s*["\']defaults-deep["\']\s*\)',
+            r'require\s*\(\s*["\']deepmerge["\']\s*\)',
+            r'from\s+["\']lodash["\']',
+            r'from\s+["\']underscore["\']',
+        ],
+        severity=Severity.INFO,
+        languages=[".js", ".ts", ".jsx", ".tsx"],
     ),
 
     # =========================================================================
@@ -1701,6 +1800,8 @@ class VulnerabilityScanner:
                 "ssrf": VulnCategory.SSRF,
                 "code": VulnCategory.CODE_INJECTION,
                 "eval": VulnCategory.CODE_INJECTION,
+                "prototype": VulnCategory.PROTOTYPE_POLLUTION,
+                "pollution": VulnCategory.PROTOTYPE_POLLUTION,
             }
             self.active_categories = {category_map[c] for c in categories if c in category_map}
         
@@ -2201,7 +2302,7 @@ Examples:
     
     parser.add_argument(
         "--category", "-c", nargs="+",
-        choices=["sql", "postgresql", "nosql", "xpath", "deserialization", "auth", "ssti", "ssrf", "code", "eval", "all"],
+        choices=["sql", "postgresql", "nosql", "xpath", "deserialization", "auth", "ssti", "ssrf", "code", "eval", "prototype", "pollution", "all"],
         default=["all"], help="Categories to scan"
     )
     
