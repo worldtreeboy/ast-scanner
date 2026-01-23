@@ -49,6 +49,7 @@ class VulnCategory(Enum):
     SSRF = "Server-Side Request Forgery"
     CODE_INJECTION = "Code Injection"
     PROTOTYPE_POLLUTION = "Prototype Pollution"
+    XXE = "XML External Entity Injection"
     BINARY_SUSPECT = "Binary Analysis Finding"
 
 @dataclass
@@ -83,15 +84,38 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         name="Code Injection - JavaScript eval",
         category=VulnCategory.CODE_INJECTION,
         patterns=[
-            r'\beval\s*\(',
             r'\beval\s*\(\s*req\.',
             r'\beval\s*\(\s*request\.',
             r'\beval\s*\(\s*["\'].*\+',
-            r'\beval\s*\(\s*`',
+            r'\beval\s*\(\s*`[^`]*\$\{',
+            r'\beval\s*\(\s*\w+\s*\)',
+            r'\beval\s*\(\s*body\.',
+            r'\beval\s*\(\s*query\.',
+            r'\beval\s*\(\s*params\.',
+            r'\(0,\s*eval\)\s*\(',
+            r'window\s*\[\s*["\']eval["\']\s*\]\s*\(',
+            r'global\s*\[\s*["\']eval["\']\s*\]\s*\(',
+            r'globalThis\.eval\s*\(',
         ],
         severity=Severity.CRITICAL,
         languages=[".js", ".ts", ".jsx", ".tsx"],
-        false_positive_patterns=[r'//.*\beval', r'/\*.*\beval', r'\.evaluate\(', r'evalua', r'literal_eval']
+        false_positive_patterns=[
+            r'//.*\beval',
+            r'/\*.*\beval',
+            r'\.evaluate\(',
+            r'evalua',
+            r'literal_eval',
+            r'evalSync',
+            r'_test\.',
+            r'\.test\.',
+            r'test_',
+            r'\.spec\.',
+            r'mock',
+            r'fixture',
+            r'JSON\.parse',
+            r'\.safeEval',
+            r'sandboxed',
+        ]
     ),
     VulnerabilityPattern(
         name="Code Injection - new Function Constructor",
@@ -233,17 +257,39 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         name="Prototype Pollution",
         category=VulnCategory.CODE_INJECTION,
         patterns=[
-            r'__proto__',
-            r'constructor\s*\[\s*["\']prototype["\']\s*\]',
             r'\[\s*["\']__proto__["\']\s*\]',
-            r'Object\.assign\s*\(\s*\{\s*\}\s*,.*req\.',
+            r'\[\s*["\']constructor["\']\s*\]\s*\[\s*["\']prototype["\']\s*\]',
+            r'Object\.assign\s*\(\s*\{\s*\}\s*,.*req\.(body|query|params)',
+            r'Object\.assign\s*\(\s*target.*req\.(body|query|params)',
             r'\.\.\.req\.(body|query|params)',
             r'merge\s*\(.*req\.(body|query|params)',
             r'extend\s*\(.*req\.(body|query|params)',
-            r'defaultsDeep\s*\(',
+            r'defaultsDeep\s*\([^)]*req\.(body|query|params)',
+            r'deepMerge\s*\([^)]*req\.(body|query|params)',
+            r'lodash\.merge\s*\([^)]*req\.',
+            r'_\.merge\s*\([^)]*req\.',
+            r'_\.defaultsDeep\s*\([^)]*req\.',
+            r'hoek\.merge\s*\([^)]*req\.',
+            r'deap\.merge\s*\([^)]*req\.',
+            r'Object\.defineProperty\s*\([^,]+,\s*req\.',
+            r'Reflect\.set\s*\([^,]+,\s*req\.',
         ],
         severity=Severity.HIGH,
         languages=[".js", ".ts", ".jsx", ".tsx"],
+        false_positive_patterns=[
+            r'_test\.',
+            r'\.test\.',
+            r'test_',
+            r'\.spec\.',
+            r'mock',
+            r'fixture',
+            r'sanitize',
+            r'validate',
+            r'whitelist',
+            r'allowedKeys',
+            r'pick\s*\(',
+            r'omit\s*\(',
+        ],
     ),
 
     # =========================================================================
@@ -1714,17 +1760,30 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'["\']UPDATE\s+.+\s+SET\s+.+["\']\s*\+',
             r'["\']DELETE\s+FROM\s+.+["\']\s*\+',
             r'["\']DROP\s+.+["\']\s*\+',
+            r'["\']TRUNCATE\s+.+["\']\s*\+',
+            r'["\']ALTER\s+TABLE\s+.+["\']\s*\+',
+            r'["\']CREATE\s+.+["\']\s*\+',
             # WHERE clause concatenation
             r'["\'].*WHERE\s+\w+\s*=\s*[\'"]?\s*["\']\s*\+',
             r'["\'].*AND\s+\w+\s*=\s*["\']\s*\+',
             r'["\'].*OR\s+\w+\s*=\s*["\']\s*\+',
+            r'["\'].*LIKE\s+[\'"]?\s*["\']\s*\+',
+            r'["\'].*IN\s*\(\s*["\']\s*\+',
+            r'["\'].*ORDER\s+BY\s+["\']\s*\+',
+            r'["\'].*GROUP\s+BY\s+["\']\s*\+',
+            r'["\'].*HAVING\s+["\']\s*\+',
+            r'["\'].*UNION\s+["\']\s*\+',
+            r'["\'].*JOIN\s+["\']\s*\+',
             # Variable assignment with SQL
             r'=\s*["\']SELECT\s+.+["\']\s*\+',
             r'=\s*["\']INSERT\s+.+["\']\s*\+',
             r'=\s*["\']UPDATE\s+.+["\']\s*\+',
             r'=\s*["\']DELETE\s+.+["\']\s*\+',
-            # Generic string building
-            r'["\']\s*\+\s*\w+\s*\+\s*["\']',
+            # Generic string building with variable
+            r'["\']\s*\+\s*[a-zA-Z_]\w*\s*\+\s*["\']',
+            # Concatenation with request/user input
+            r'["\']\s*\+\s*(?:req|request|params|query|body|input|user)\.',
+            r'["\']\s*\+\s*\$_(?:GET|POST|REQUEST|COOKIE)\[',
         ],
         severity=Severity.CRITICAL,
         languages=[".js", ".ts", ".jsx", ".tsx", ".py", ".php", ".java", ".cs", ".rb", ".go", ".kt"],
@@ -1739,6 +1798,21 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'setString\s*\(',
             r'setInt\s*\(',
             r'setParameter\s*\(',
+            r'AddWithValue\s*\(',
+            r'@\w+\s*[,\)]',
+            r':\w+\s*[,\)]',
+            r'\$\d+\s*[,\)]',
+            r'parameterized',
+            r'\.Parameters\.Add',
+            r'\.bind\s*\(',
+            r'\.placeholder',
+            r'QueryBuilder',
+            r'query_builder',
+            r'whereRaw.*\?',
+            r'\.escape\s*\(',
+            r'mysql_real_escape_string',
+            r'pg_escape_string',
+            r'\.quote\s*\(',
         ],
     ),
 
@@ -1750,6 +1824,8 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'\.execute\s*\(\s*[a-zA-Z_]\w*\s*\)',
             r'\.executeQuery\s*\(\s*[a-zA-Z_]\w*\s*\)',
             r'\.executeUpdate\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'\.executeBatch\s*\(\s*\)',
+            r'\.addBatch\s*\(\s*[a-zA-Z_]\w*\s*\)',
             # Java Statement.execute with method call result
             r'\.execute\s*\(\s*\w+\s*\.\s*\w+\s*\([^)]*\)\s*\)',
             r'\.executeQuery\s*\(\s*\w+\s*\.\s*\w+\s*\([^)]*\)\s*\)',
@@ -1758,21 +1834,41 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'jdbcTemplate\.query\s*\(\s*[a-zA-Z_]\w*\s*,',
             r'jdbcTemplate\.queryForList\s*\(\s*[a-zA-Z_]\w*\s*,',
             r'jdbcTemplate\.queryForObject\s*\(\s*[a-zA-Z_]\w*\s*,',
+            r'jdbcTemplate\.queryForMap\s*\(\s*[a-zA-Z_]\w*\s*,',
+            r'jdbcTemplate\.queryForRowSet\s*\(\s*[a-zA-Z_]\w*\s*,',
             r'jdbcTemplate\.update\s*\(\s*[a-zA-Z_]\w*\s*[,\)]',
             r'jdbcTemplate\.execute\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'jdbcTemplate\.batchUpdate\s*\(\s*[a-zA-Z_]\w*\s*[,\)]',
+            r'namedParameterJdbcTemplate\.query\s*\(\s*[a-zA-Z_]\w*\s*,',
+            r'namedParameterJdbcTemplate\.update\s*\(\s*[a-zA-Z_]\w*\s*,',
             # Python cursor.execute with variable
             r'cursor\.execute\s*\(\s*[a-zA-Z_]\w*\s*\)',
             r'cur\.execute\s*\(\s*[a-zA-Z_]\w*\s*\)',
             r'\.execute\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'cursor\.executemany\s*\(\s*[a-zA-Z_]\w*\s*,',
+            r'\.executescript\s*\(\s*[a-zA-Z_]\w*\s*\)',
             # C# SqlCommand with variable
             r'SqlCommand\s*\(\s*[a-zA-Z_]\w*\s*,',
             r'\.CommandText\s*=\s*[a-zA-Z_]\w*\s*;',
+            r'OracleCommand\s*\(\s*[a-zA-Z_]\w*\s*,',
+            r'MySqlCommand\s*\(\s*[a-zA-Z_]\w*\s*,',
+            r'NpgsqlCommand\s*\(\s*[a-zA-Z_]\w*\s*,',
             # Go db.Query with variable
             r'db\.Query\s*\(\s*[a-zA-Z_]\w*\s*\)',
             r'db\.Exec\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'db\.QueryRow\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'db\.QueryContext\s*\([^,]+,\s*[a-zA-Z_]\w*\s*\)',
+            r'db\.ExecContext\s*\([^,]+,\s*[a-zA-Z_]\w*\s*\)',
+            r'tx\.Query\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'tx\.Exec\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            # Ruby ActiveRecord
+            r'\.execute\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'\.select_all\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'\.exec_query\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'find_by_sql\s*\(\s*[a-zA-Z_]\w*\s*\)',
         ],
         severity=Severity.HIGH,
-        languages=[".java", ".kt", ".scala", ".py", ".cs", ".go"],
+        languages=[".java", ".kt", ".scala", ".py", ".cs", ".go", ".rb"],
         false_positive_patterns=[
             r'PreparedStatement',
             r'prepareStatement',
@@ -1785,11 +1881,25 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'setParameter',
             r'bindParam',
             r'\.prepare\s*\(',
+            r'\.Prepare\s*\(',
+            r'stmt\.Query',
+            r'stmt\.Exec',
             # Constant/static query names
             r'QUERY\s*\)',
             r'SQL\s*\)',
             r'_QUERY\s*\)',
             r'_SQL\s*\)',
+            r'CONST_',
+            r'const\s+\w+\s*=.*\)',
+            r'final\s+.*\s*\)',
+            r'static\s+final\s+String',
+            # ORM safe methods
+            r'\.sanitize',
+            r'\.escape',
+            r'\.quote',
+            r'\.where\s*\(\s*\{',
+            r'\.findOne\s*\(',
+            r'\.findAll\s*\(',
         ],
     ),
 
@@ -3371,10 +3481,26 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'pickle\.Unpickler\s*\(',
             r'shelve\.open\s*\(',
             r'dill\.loads?\s*\(',
+            r'cloudpickle\.loads?\s*\(',
+            r'joblib\.load\s*\(',
+            r'torch\.load\s*\([^)]*pickle',
+            r'numpy\.load\s*\([^)]*allow_pickle\s*=\s*True',
+            r'pandas\.read_pickle\s*\(',
         ],
         severity=Severity.CRITICAL,
         languages=[".py"],
-        false_positive_patterns=[r'#.*pickle'],
+        false_positive_patterns=[
+            r'#.*pickle',
+            r'pickle\.dump',
+            r'_test\.',
+            r'\.test\.',
+            r'test_',
+            r'mock',
+            r'fixture',
+            r'RestrictedUnpickler',
+            r'SafeUnpickler',
+            r'find_class.*raise',
+        ],
     ),
     VulnerabilityPattern(
         name="Insecure Deserialization - Python YAML",
@@ -3406,7 +3532,19 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         ],
         severity=Severity.CRITICAL,
         languages=[".py"],
-        false_positive_patterns=[r'yaml\.safe_load', r'SafeLoader'],
+        false_positive_patterns=[
+            r'yaml\.safe_load',
+            r'SafeLoader',
+            r'yaml\.CSafeLoader',
+            r'Loader\s*=\s*yaml\.SafeLoader',
+            r'Loader\s*=\s*SafeLoader',
+            r'_test\.',
+            r'\.test\.',
+            r'test_',
+            r'mock',
+            r'fixture',
+            r'yaml\.dump',
+        ],
     ),
     VulnerabilityPattern(
         name="Insecure Deserialization - Node serialize",
@@ -3744,6 +3882,7 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'password\s*[=:]\s*["\']["\']',
             r'<PASSWORD>',
             r'\$\{',
+            r'%\{',
             r'Environment\.GetEnvironmentVariable',
             r'Configuration\[',
             r'\.getProperty\s*\(',
@@ -3753,12 +3892,44 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'example[_-]?password',
             r'your[_-]?password[_-]?here',
             r'CHANGE[_-]?ME',
+            r'TODO',
+            r'FIXME',
             r'xxx+',
             r'\*{4,}',
             r'\.put\s*\(\s*["\']admin["\']',
             r'\.get\s*\(\s*["\']admin["\']',
             r'config\s*\[\s*["\']admin["\']\s*\]',
             r'["\']admin["\']\s*[=:]\s*(?:true|false|True|False)',
+            # Test/example file indicators
+            r'_test\.',
+            r'\.test\.',
+            r'_spec\.',
+            r'\.spec\.',
+            r'test_',
+            r'mock_',
+            r'fake_',
+            r'example\.',
+            r'sample\.',
+            # Documentation/comment patterns
+            r'["\']password["\']:\s*["\']<',
+            r'["\']password["\']:\s*["\']your',
+            r'["\']password["\']:\s*["\']REDACTED',
+            r'placeholder',
+            r'dummy',
+            # Schema/validation patterns (not actual passwords)
+            r'required:\s*true',
+            r'type:\s*["\']string["\']',
+            r'minLength',
+            r'maxLength',
+            r'pattern:',
+            # Kubernetes/Docker secrets reference (not actual values)
+            r'secretKeyRef',
+            r'valueFrom',
+            r'secretName',
+            # Environment variable references
+            r'\$[A-Z_]+',
+            r'\$\([^)]+\)',
+            r'%[A-Z_]+%',
         ],
     ),
 
@@ -3771,10 +3942,19 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'jwt\.decode\s*\([^)]*verify\s*=\s*False',
             r'ValidateIssuerSigningKey\s*=\s*false',
             r'RequireSignedTokens\s*=\s*false',
+            r'RequireExpirationTime\s*=\s*false',
+            r'RequireAudience\s*=\s*false',
             r'verify\s*[=:]\s*false',
             r'ignoreExpiration\s*[=:]\s*true',
             r'ignoreNotBefore\s*[=:]\s*true',
             r'algorithms\s*[=:]\s*\[\s*\]',
+            # Additional JWT bypass patterns
+            r'clockTolerance\s*[=:]\s*\d{6,}',
+            r'\.decode\s*\([^)]*options\s*:\s*\{[^}]*complete\s*:\s*true',
+            r'jwt_decode\s*\([^)]+,\s*\{[^}]*verify["\']:\s*[Ff]alse',
+            r'LifetimeValidator\s*=\s*null',
+            r'ValidateLifetime\s*=\s*false',
+            r'SaveSigninToken\s*=\s*false.*ValidateIssuerSigningKey\s*=\s*false',
         ],
         severity=Severity.CRITICAL,
         languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go"],
@@ -3784,6 +3964,12 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'^\s*#',
             r'//.*verify',
             r'FrappeClient.*verify=False',
+            r'_test\.',
+            r'\.test\.',
+            r'test_',
+            r'\.spec\.',
+            r'mock',
+            r'fixture',
         ],
     ),
 
@@ -3799,6 +3985,12 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'\$\w*(?:pass|pwd|token|secret|key)\w*\s*==\s*',
             r'md5\s*\([^)]+\)\s*==',
             r'sha1\s*\([^)]+\)\s*==',
+            # Additional weak comparison patterns
+            r'hash\s*\([^)]+\)\s*==',
+            r'crypt\s*\([^)]+\)\s*==',
+            r'password_hash\s*\([^)]+\)\s*==',
+            r'\.compare\s*\(\s*password',
+            r'password\.localeCompare\s*\(',
         ],
         severity=Severity.MEDIUM,
         languages=[".php", ".js"],
@@ -3809,6 +4001,12 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'secure_compare',
             r'constant_time_compare',
             r'timingSafeEqual',
+            r'password_verify',
+            r'bcrypt\.compare',
+            r'argon2\.verify',
+            r'scrypt\.verify',
+            r'\.verify\s*\(',
+            r'crypto\.subtle',
         ],
     ),
 
@@ -3966,26 +4164,26 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         severity=Severity.CRITICAL,
         languages=[".py"],
         false_positive_patterns=[
-
-            r'getDeclaredConstructor',
-            r'clazz\.',
-            r'Class\.forName',
-            r'\.newInstance\(\)',r'getDeclaredConstructor',
-            r'clazz\.',
-            r'Class\.forName',
-            r'\.newInstance\(\)',r'getDeclaredConstructor',
-            r'clazz\.',
-            r'Class\.forName',
-            r'\.newInstance\(\)',r'getDeclaredConstructor',
-            r'clazz\.',
-            r'Class\.forName',
-            r'\.newInstance\(\)',r'render_template\s*\(\s*["\'][^"\']+\.(html|jinja|j2)',
+            r'render_template\s*\(\s*["\'][^"\']+\.(html|jinja|j2)',
             r'escape\s*\(',
             r'Markup\s*\(',
             r'markupsafe\.',
             r'autoescape\s*=\s*True',
             r'\.txt["\']',
             r'select_autoescape',
+            # Safe rendering with static templates
+            r'render_template\s*\(\s*["\']',
+            r'get_template\s*\(\s*["\']',
+            # Escaped output
+            r'\|e\s*\}\}',
+            r'\|escape\s*\}\}',
+            r'\|safe\s*\}\}',
+            # Test/mock context
+            r'_test\.',
+            r'\.test\.',
+            r'test_',
+            r'mock',
+            r'fixture',
         ],
     ),
 
@@ -4640,18 +4838,16 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         severity=Severity.HIGH,
         languages=[".js", ".ts", ".jsx", ".tsx", ".mjs"],
         false_positive_patterns=[
-            r'getDeclaredConstructor',
-            r'clazz\..*newInstance',
-            r'Class\.forName',
-            r'getDeclaredConstructor',
-            r'clazz\..*newInstance',
-            r'Class\.forName',
             r'https?://localhost',
             r'https?://127\.0\.0\.1',
             r'https?://0\.0\.0\.0',
             r'https?://\[::1\]',
             r'isValidUrl\s*\(',
             r'validateUrl\s*\(',
+            r'isSafeUrl\s*\(',
+            r'isAllowedUrl\s*\(',
+            r'checkUrl\s*\(',
+            r'sanitizeUrl\s*\(',
             r'isSafeUrl\s*\(',
             r'allowedHosts',
             r'allowedDomains',
@@ -4662,6 +4858,25 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'config\.\w+[Uu]rl',                 # Config URLs are typically safe
             r'URL\.canParse\s*\(',                # URL validation
             r'new\s+URL\s*\([^)]+\)\.hostname',   # Extracting hostname for validation
+            # Test/mock context
+            r'_test\.',
+            r'\.test\.',
+            r'test_',
+            r'\.spec\.',
+            r'mock',
+            r'fixture',
+            r'__tests__',
+            # Configuration constants
+            r'const\s+\w+URL\s*=',
+            r'const\s+API_',
+            r'const\s+BASE_URL',
+            r'const\s+SERVICE_URL',
+            # Safe URL patterns
+            r'\.parse\s*\([^)]+\)\.host',
+            r'\.hostname\s*===',
+            r'\.origin\s*===',
+            r'startsWith\s*\(["\']https?://',
+            r'\.includes\s*\(["\']allowed',
         ],
     ),
 
@@ -5052,6 +5267,1369 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'\.env',
             r'config\.',
             r'settings\.',
+        ],
+    ),
+
+    # =========================================================================
+    # INSECURE DESERIALIZATION - SnakeYAML (Java)
+    # =========================================================================
+    VulnerabilityPattern(
+        name="Insecure Deserialization - SnakeYAML (Java)",
+        category=VulnCategory.DESERIALIZATION,
+        patterns=[
+            # Basic SnakeYAML instantiation without SafeConstructor
+            r'new\s+Yaml\s*\(\s*\)',
+            r'Yaml\s+\w+\s*=\s*new\s+Yaml\s*\(\s*\)',
+
+            # Yaml.load() with untrusted input - CRITICAL
+            r'yaml\.load\s*\(\s*\w+\s*\)',
+            r'\.load\s*\(\s*request\.get',
+            r'\.load\s*\(\s*.*getParameter',
+            r'\.load\s*\(\s*.*getInputStream',
+            r'\.load\s*\(\s*.*InputStream',
+            r'\.load\s*\(\s*new\s+StringReader',
+            r'\.load\s*\(\s*new\s+FileReader',
+            r'\.load\s*\(\s*new\s+InputStreamReader',
+
+            # Yaml.loadAll() - iterative loading
+            r'yaml\.loadAll\s*\(',
+            r'\.loadAll\s*\(\s*request\.get',
+            r'\.loadAll\s*\(\s*.*getParameter',
+
+            # Yaml.loadAs() - typed loading still vulnerable
+            r'yaml\.loadAs\s*\(',
+            r'\.loadAs\s*\(\s*request\.get',
+            r'\.loadAs\s*\(\s*.*getParameter',
+
+            # SnakeYAML with custom Constructor (potentially unsafe)
+            r'new\s+Yaml\s*\(\s*new\s+Constructor\s*\(\s*\)',
+            r'new\s+Yaml\s*\(\s*new\s+Constructor\s*\([^S]',  # Not SafeConstructor
+
+            # Yaml with custom Representer (may indicate complex config)
+            r'new\s+Yaml\s*\(\s*new\s+Representer',
+
+            # Yaml.parse() - returns events, still processes untrusted YAML
+            r'yaml\.parse\s*\(\s*request\.get',
+            r'yaml\.parse\s*\(\s*.*getParameter',
+
+            # DumperOptions with unsafe settings
+            r'DumperOptions.*setAllowReadOnlyProperties\s*\(\s*true',
+
+            # Yaml compose methods
+            r'yaml\.compose\s*\(\s*request\.get',
+            r'yaml\.composeAll\s*\(\s*request\.get',
+
+            # org.yaml.snakeyaml imports indicate usage
+            r'import\s+org\.yaml\.snakeyaml\.Yaml\s*;',
+            r'import\s+org\.yaml\.snakeyaml\.\*\s*;',
+
+            # Spring YAML with user input
+            r'YamlPropertiesFactoryBean.*setResources.*getParameter',
+            r'YamlMapFactoryBean.*setResources.*getParameter',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'new\s+Yaml\s*\(\s*new\s+SafeConstructor',
+            r'SafeConstructor',
+            r'new\s+Constructor\s*\(\s*\w+\.class\s*\)',  # Type-restricted constructor
+            r'yaml\.dump',  # Serializing, not deserializing
+            r'//.*yaml\.load',  # Commented out
+            r'/\*.*yaml\.load',  # Block comment
+        ],
+    ),
+
+    # =========================================================================
+    # SSTI - FreeMarker (Java) - Comprehensive
+    # =========================================================================
+    VulnerabilityPattern(
+        name="SSTI - FreeMarker Template Injection (Java)",
+        category=VulnCategory.SSTI,
+        patterns=[
+            # Template creation with user-controlled content - CRITICAL
+            r'new\s+Template\s*\(\s*[^,]*,\s*new\s+StringReader\s*\(\s*\w+\s*\)',
+            r'new\s+Template\s*\(\s*[^,]*,\s*new\s+StringReader\s*\(\s*.*\+',
+            r'new\s+Template\s*\(\s*[^,]*,\s*new\s+StringReader\s*\(\s*.*request',
+            r'new\s+Template\s*\(\s*[^,]*,\s*new\s+StringReader\s*\(\s*.*getParameter',
+            r'new\s+Template\s*\(\s*"[^"]*"\s*,\s*\w+\s*,',  # Variable as template content
+
+            # Configuration.getTemplate with user input
+            r'Configuration.*getTemplate\s*\(\s*.*\+',
+            r'Configuration.*getTemplate\s*\(\s*.*request\.get',
+            r'Configuration.*getTemplate\s*\(\s*.*getParameter',
+            r'cfg\.getTemplate\s*\(\s*.*\+',
+            r'cfg\.getTemplate\s*\(\s*.*request\.get',
+
+            # Template.process with tainted context
+            r'template\.process\s*\(\s*.*request\.get',
+            r'template\.process\s*\(\s*.*getParameter',
+            r'\.process\s*\(\s*model\s*,',  # Generic process with model
+
+            # Environment manipulation
+            r'Environment\.setVariable.*getParameter',
+            r'Environment\.setVariable.*request\.get',
+            r'env\.setVariable\s*\(\s*.*request\.get',
+
+            # SharedVariable with user input
+            r'setSharedVariable\s*\(\s*.*request\.get',
+            r'setSharedVariable\s*\(\s*.*getParameter',
+            r'cfg\.setSharedVariable\s*\(\s*[^,]+,\s*.*\+',
+
+            # Freemarker imports
+            r'import\s+freemarker\.template\.Template\s*;',
+            r'import\s+freemarker\.template\.\*\s*;',
+
+            # FreeMarker dangerous builtins (in template content)
+            r'\$\{[^}]*\?new\s*\(',  # ?new() builtin - RCE
+            r'\$\{[^}]*\?api\s*[.\(]',  # ?api builtin - access Java API
+            r'<#assign\s+\w+\s*=\s*"freemarker\.template\.utility\.Execute"',  # Execute class
+            r'<#assign\s+\w+\s*=\s*"freemarker\.template\.utility\.ObjectConstructor"',
+            r'\.getClassLoader\s*\(\s*\)',  # ClassLoader access in template
+            r'\.getClass\s*\(\s*\)\.forName',  # Reflection in template
+
+            # TemplateLoader with user paths
+            r'FileTemplateLoader\s*\(\s*.*request\.get',
+            r'FileTemplateLoader\s*\(\s*.*getParameter',
+            r'StringTemplateLoader.*putTemplate\s*\(\s*.*request\.get',
+
+            # Unsafe Configuration settings
+            r'setNewBuiltinClassResolver\s*\(\s*TemplateClassResolver\.UNRESTRICTED',
+            r'setAPIBuiltinEnabled\s*\(\s*true',
+            r'Configuration\.UNRESTRICTED_RESOLVER',
+
+            # Spring FreeMarker
+            r'FreeMarkerConfigurer.*setTemplateLoaderPath.*getParameter',
+            r'FreeMarkerTemplateUtils\.processTemplateIntoString\s*\(\s*.*request',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".java", ".kt", ".groovy", ".ftl", ".ftlh"],
+        false_positive_patterns=[
+            r'setNewBuiltinClassResolver\s*\(\s*TemplateClassResolver\.SAFER',
+            r'setNewBuiltinClassResolver\s*\(\s*TemplateClassResolver\.ALLOWS_NOTHING',
+            r'setAPIBuiltinEnabled\s*\(\s*false',
+            r'HtmlUtils\.htmlEscape',
+            r'StringEscapeUtils\.escapeHtml',
+            r'\.getTemplate\s*\(\s*["\'][^"\']+\.ftl',  # Static template name
+            r'//.*Template',  # Commented
+        ],
+    ),
+
+    # =========================================================================
+    # SSTI - Velocity Template Injection (Java) - Comprehensive
+    # =========================================================================
+    VulnerabilityPattern(
+        name="SSTI - Velocity Template Injection (Java)",
+        category=VulnCategory.SSTI,
+        patterns=[
+            # Velocity.evaluate with user input - CRITICAL
+            r'Velocity\.evaluate\s*\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*\w+\s*\)',
+            r'Velocity\.evaluate\s*\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*.*\+',
+            r'Velocity\.evaluate\s*\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*.*request',
+            r'Velocity\.evaluate\s*\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*.*getParameter',
+            r'Velocity\.evaluate\s*\(\s*context\s*,\s*writer\s*,\s*[^,]+,\s*\w+',
+
+            # VelocityEngine.evaluate
+            r'VelocityEngine.*\.evaluate\s*\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*.*request',
+            r'VelocityEngine.*\.evaluate\s*\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*.*getParameter',
+            r'velocityEngine\.evaluate\s*\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*\w+\s*\)',
+            r've\.evaluate\s*\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*\w+\s*\)',
+
+            # RuntimeInstance.evaluate
+            r'RuntimeInstance.*\.evaluate\s*\(',
+            r'ri\.evaluate\s*\(\s*.*request',
+
+            # Template.merge with tainted context
+            r'template\.merge\s*\(\s*.*getParameter',
+            r'template\.merge\s*\(\s*context\s*,',  # Merge with context
+            r'\.merge\s*\(\s*velocityContext',
+
+            # VelocityContext.put with user input
+            r'VelocityContext.*\.put\s*\(\s*[^,]+,\s*.*request\.get',
+            r'VelocityContext.*\.put\s*\(\s*[^,]+,\s*.*getParameter',
+            r'context\.put\s*\(\s*[^,]+,\s*.*request\.get',
+            r'ctx\.put\s*\(\s*[^,]+,\s*.*getParameter',
+
+            # Velocity getTemplate with user input
+            r'Velocity\.getTemplate\s*\(\s*.*\+',
+            r'Velocity\.getTemplate\s*\(\s*.*request\.get',
+            r'velocityEngine\.getTemplate\s*\(\s*.*getParameter',
+
+            # mergeTemplate with user path
+            r'Velocity\.mergeTemplate\s*\(\s*.*request\.get',
+            r'\.mergeTemplate\s*\(\s*.*getParameter',
+
+            # Velocity imports
+            r'import\s+org\.apache\.velocity\.VelocityContext\s*;',
+            r'import\s+org\.apache\.velocity\.\*\s*;',
+            r'import\s+org\.apache\.velocity\.app\.Velocity\s*;',
+
+            # Dangerous Velocity directives in templates
+            r'#set\s*\(\s*\$\w+\s*=\s*.*\.getClass\s*\(\s*\)',  # Reflection
+            r'#set\s*\(\s*\$\w+\s*=\s*.*\.forName\s*\(',  # Class loading
+            r'#set\s*\(\s*\$\w+\s*=\s*.*Runtime\.getRuntime',  # Runtime access
+            r'#set\s*\(\s*\$\w+\s*=\s*.*\.exec\s*\(',  # Command execution
+            r'\$class\.forName\s*\(',  # ClassTool abuse
+            r'\$\w+\.getClass\s*\(\s*\)\.forName',  # Reflection chain
+
+            # StringResourceLoader with user content
+            r'StringResourceLoader.*putStringResource\s*\(\s*[^,]+,\s*.*request',
+            r'StringResourceRepository.*putStringResource\s*\(\s*[^,]+,\s*.*getParameter',
+
+            # ResourceLoader configuration
+            r'setProperty\s*\(\s*["\']resource\.loader["\'].*request',
+            r'setProperty\s*\(\s*RuntimeConstants\.RESOURCE_LOADER.*getParameter',
+
+            # Spring Velocity
+            r'VelocityEngineUtils\.mergeTemplateIntoString\s*\(\s*[^,]+,\s*.*request',
+            r'VelocityConfigurer.*setResourceLoaderPath.*getParameter',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".java", ".kt", ".groovy", ".vm", ".vsl"],
+        false_positive_patterns=[
+            r'\.getTemplate\s*\(\s*["\'][^"\']+\.vm',  # Static template
+            r'uberspect\.introspect',  # Introspection check
+            r'SecureUberspector',  # Security uberspector
+            r'//.*Velocity\.evaluate',  # Commented
+            r'/\*.*Velocity\.evaluate',  # Block comment
+        ],
+    ),
+
+    # =========================================================================
+    # XXE - XML External Entity Injection (Java) - Comprehensive
+    # =========================================================================
+    VulnerabilityPattern(
+        name="XXE - DocumentBuilderFactory (Java)",
+        category=VulnCategory.XXE,
+        patterns=[
+            # DocumentBuilderFactory without secure configuration
+            r'DocumentBuilderFactory\.newInstance\s*\(\s*\)',
+            r'DocumentBuilderFactory\s+\w+\s*=\s*DocumentBuilderFactory\.newInstance',
+
+            # DocumentBuilder.parse with untrusted input
+            r'documentBuilder\.parse\s*\(\s*new\s+InputSource',
+            r'documentBuilder\.parse\s*\(\s*.*getInputStream',
+            r'documentBuilder\.parse\s*\(\s*.*request\.get',
+            r'builder\.parse\s*\(\s*new\s+StringReader',
+            r'builder\.parse\s*\(\s*new\s+ByteArrayInputStream',
+            r'\.parse\s*\(\s*new\s+InputSource\s*\(\s*new\s+StringReader',
+
+            # factory.newDocumentBuilder without setFeature
+            r'factory\.newDocumentBuilder\s*\(\s*\)',
+            r'dbf\.newDocumentBuilder\s*\(\s*\)',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'setFeature\s*\(\s*["\']http://apache\.org/xml/features/disallow-doctype-decl["\']\s*,\s*true',
+            r'setFeature\s*\(\s*XMLConstants\.FEATURE_SECURE_PROCESSING\s*,\s*true',
+            r'setFeature\s*\(\s*["\']http://xml\.org/sax/features/external-general-entities["\']\s*,\s*false',
+            r'setFeature\s*\(\s*["\']http://xml\.org/sax/features/external-parameter-entities["\']\s*,\s*false',
+            r'setExpandEntityReferences\s*\(\s*false',
+            r'FEATURE_SECURE_PROCESSING',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="XXE - SAXParserFactory (Java)",
+        category=VulnCategory.XXE,
+        patterns=[
+            # SAXParserFactory without secure configuration
+            r'SAXParserFactory\.newInstance\s*\(\s*\)',
+            r'SAXParserFactory\s+\w+\s*=\s*SAXParserFactory\.newInstance',
+
+            # SAXParser.parse with untrusted input
+            r'saxParser\.parse\s*\(\s*new\s+InputSource',
+            r'saxParser\.parse\s*\(\s*.*getInputStream',
+            r'saxParser\.parse\s*\(\s*.*request\.get',
+            r'parser\.parse\s*\(\s*new\s+InputSource\s*\(\s*new\s+StringReader',
+
+            # factory.newSAXParser without setFeature
+            r'factory\.newSAXParser\s*\(\s*\)',
+            r'spf\.newSAXParser\s*\(\s*\)',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'setFeature\s*\(\s*["\']http://apache\.org/xml/features/disallow-doctype-decl["\']\s*,\s*true',
+            r'setFeature\s*\(\s*XMLConstants\.FEATURE_SECURE_PROCESSING\s*,\s*true',
+            r'setFeature\s*\(\s*["\']http://xml\.org/sax/features/external-general-entities["\']\s*,\s*false',
+            r'FEATURE_SECURE_PROCESSING',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="XXE - XMLReader (Java)",
+        category=VulnCategory.XXE,
+        patterns=[
+            # XMLReader creation
+            r'XMLReaderFactory\.createXMLReader\s*\(\s*\)',
+            r'XMLReader\s+\w+\s*=\s*XMLReaderFactory\.createXMLReader',
+
+            # XMLReader.parse with untrusted input
+            r'xmlReader\.parse\s*\(\s*new\s+InputSource',
+            r'xmlReader\.parse\s*\(\s*.*getInputStream',
+            r'reader\.parse\s*\(\s*new\s+InputSource\s*\(\s*new\s+StringReader',
+
+            # SAXParser.getXMLReader
+            r'saxParser\.getXMLReader\s*\(\s*\)',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'setFeature\s*\(\s*["\']http://apache\.org/xml/features/disallow-doctype-decl["\']\s*,\s*true',
+            r'setFeature\s*\(\s*["\']http://xml\.org/sax/features/external-general-entities["\']\s*,\s*false',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="XXE - TransformerFactory (Java)",
+        category=VulnCategory.XXE,
+        patterns=[
+            # TransformerFactory without secure configuration
+            r'TransformerFactory\.newInstance\s*\(\s*\)',
+            r'TransformerFactory\s+\w+\s*=\s*TransformerFactory\.newInstance',
+
+            # Transformer with untrusted XSLT
+            r'transformerFactory\.newTransformer\s*\(\s*new\s+StreamSource',
+            r'tf\.newTransformer\s*\(\s*new\s+StreamSource\s*\(\s*new\s+StringReader',
+            r'\.newTransformer\s*\(\s*.*getInputStream',
+            r'\.newTransformer\s*\(\s*.*request\.get',
+
+            # SAXTransformerFactory
+            r'SAXTransformerFactory\.newInstance\s*\(\s*\)',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'setAttribute\s*\(\s*XMLConstants\.ACCESS_EXTERNAL_DTD\s*,\s*""',
+            r'setAttribute\s*\(\s*XMLConstants\.ACCESS_EXTERNAL_STYLESHEET\s*,\s*""',
+            r'setFeature\s*\(\s*XMLConstants\.FEATURE_SECURE_PROCESSING\s*,\s*true',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="XXE - XMLInputFactory/StAX (Java)",
+        category=VulnCategory.XXE,
+        patterns=[
+            # XMLInputFactory without secure configuration
+            r'XMLInputFactory\.newInstance\s*\(\s*\)',
+            r'XMLInputFactory\.newFactory\s*\(\s*\)',
+            r'XMLInputFactory\s+\w+\s*=\s*XMLInputFactory\.newInstance',
+
+            # XMLStreamReader with untrusted input
+            r'xmlInputFactory\.createXMLStreamReader\s*\(\s*new\s+StringReader',
+            r'xmlInputFactory\.createXMLStreamReader\s*\(\s*.*getInputStream',
+            r'\.createXMLStreamReader\s*\(\s*.*request\.get',
+
+            # XMLEventReader
+            r'xmlInputFactory\.createXMLEventReader\s*\(\s*new\s+StringReader',
+            r'\.createXMLEventReader\s*\(\s*.*getInputStream',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'setProperty\s*\(\s*XMLInputFactory\.IS_SUPPORTING_EXTERNAL_ENTITIES\s*,\s*false',
+            r'setProperty\s*\(\s*XMLInputFactory\.SUPPORT_DTD\s*,\s*false',
+            r'IS_SUPPORTING_EXTERNAL_ENTITIES.*false',
+            r'SUPPORT_DTD.*false',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="XXE - SchemaFactory (Java)",
+        category=VulnCategory.XXE,
+        patterns=[
+            # SchemaFactory without secure configuration
+            r'SchemaFactory\.newInstance\s*\(',
+            r'SchemaFactory\s+\w+\s*=\s*SchemaFactory\.newInstance',
+
+            # Schema creation with untrusted input
+            r'schemaFactory\.newSchema\s*\(\s*new\s+StreamSource\s*\(\s*new\s+StringReader',
+            r'\.newSchema\s*\(\s*.*getInputStream',
+            r'\.newSchema\s*\(\s*.*request\.get',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'setProperty\s*\(\s*XMLConstants\.ACCESS_EXTERNAL_DTD\s*,\s*""',
+            r'setProperty\s*\(\s*XMLConstants\.ACCESS_EXTERNAL_SCHEMA\s*,\s*""',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="XXE - Unmarshaller/JAXB (Java)",
+        category=VulnCategory.XXE,
+        patterns=[
+            # JAXB Unmarshaller with untrusted input
+            r'unmarshaller\.unmarshal\s*\(\s*new\s+StringReader',
+            r'unmarshaller\.unmarshal\s*\(\s*new\s+StreamSource\s*\(\s*new\s+StringReader',
+            r'unmarshaller\.unmarshal\s*\(\s*.*getInputStream',
+            r'unmarshaller\.unmarshal\s*\(\s*.*request\.get',
+            r'\.unmarshal\s*\(\s*new\s+InputSource\s*\(\s*new\s+StringReader',
+
+            # JAXBContext usage
+            r'JAXBContext\.newInstance\s*\(',
+            r'jaxbContext\.createUnmarshaller\s*\(\s*\)',
+        ],
+        severity=Severity.MEDIUM,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'XMLInputFactory.*setProperty.*SUPPORT_DTD.*false',
+            r'setProperty\s*\(\s*XMLInputFactory\.IS_SUPPORTING_EXTERNAL_ENTITIES',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="XXE - XPathFactory (Java)",
+        category=VulnCategory.XXE,
+        patterns=[
+            # XPathFactory can be exploited when parsing untrusted XML
+            r'XPathFactory\.newInstance\s*\(\s*\)',
+            r'xpath\.evaluate\s*\(\s*[^,]+,\s*new\s+InputSource\s*\(\s*new\s+StringReader',
+            r'xpath\.evaluate\s*\(\s*[^,]+,\s*.*getInputStream',
+        ],
+        severity=Severity.MEDIUM,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'setFeature\s*\(\s*XMLConstants\.FEATURE_SECURE_PROCESSING',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="XXE - Digester (Apache Commons)",
+        category=VulnCategory.XXE,
+        patterns=[
+            # Apache Commons Digester
+            r'new\s+Digester\s*\(\s*\)',
+            r'Digester\s+\w+\s*=\s*new\s+Digester',
+            r'digester\.parse\s*\(\s*new\s+InputSource',
+            r'digester\.parse\s*\(\s*.*getInputStream',
+            r'digester\.parse\s*\(\s*.*request\.get',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'setFeature\s*\(\s*["\']http://apache\.org/xml/features/disallow-doctype-decl',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="XXE - dom4j (Java)",
+        category=VulnCategory.XXE,
+        patterns=[
+            # dom4j SAXReader
+            r'new\s+SAXReader\s*\(\s*\)',
+            r'SAXReader\s+\w+\s*=\s*new\s+SAXReader',
+            r'saxReader\.read\s*\(\s*new\s+StringReader',
+            r'saxReader\.read\s*\(\s*.*getInputStream',
+            r'reader\.read\s*\(\s*new\s+InputSource\s*\(\s*new\s+StringReader',
+
+            # dom4j DocumentHelper
+            r'DocumentHelper\.parseText\s*\(',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'setFeature\s*\(\s*["\']http://apache\.org/xml/features/disallow-doctype-decl',
+            r'saxReader\.setFeature\s*\(',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="XXE - JDOM (Java)",
+        category=VulnCategory.XXE,
+        patterns=[
+            # JDOM SAXBuilder
+            r'new\s+SAXBuilder\s*\(\s*\)',
+            r'SAXBuilder\s+\w+\s*=\s*new\s+SAXBuilder',
+            r'saxBuilder\.build\s*\(\s*new\s+StringReader',
+            r'saxBuilder\.build\s*\(\s*.*getInputStream',
+            r'builder\.build\s*\(\s*new\s+InputSource\s*\(\s*new\s+StringReader',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'setFeature\s*\(\s*["\']http://apache\.org/xml/features/disallow-doctype-decl',
+            r'new\s+SAXBuilder\s*\(\s*XMLReaders\.NONVALIDATING',  # Safer in JDOM2
+        ],
+    ),
+
+    # =========================================================================
+    # REFLECTION-BASED COMMAND/CODE INJECTION - EVASION DETECTION
+    # =========================================================================
+    VulnerabilityPattern(
+        name="Reflection-Based Command Injection (Java)",
+        category=VulnCategory.CODE_INJECTION,
+        patterns=[
+            # Method.invoke on Runtime.exec - the core evasion pattern
+            r'\.invoke\s*\(\s*runtime\s*,',
+            r'\.invoke\s*\(\s*\w*[Rr]untime\w*\s*,',
+            r'exec\.invoke\s*\(',
+            r'getMethod\s*\(\s*["\']exec["\']\s*,',
+            r'getDeclaredMethod\s*\(\s*["\']exec["\']\s*,',
+
+            # Reflection chain: Class.forName("java.lang.Runtime")
+            r'Class\.forName\s*\(\s*["\']java\.lang\.Runtime["\']\s*\)',
+            r'forName\s*\(\s*["\']java\.lang\.\s*"\s*\+',
+            r'forName\s*\(\s*.*Runtime.*\)',
+
+            # getRuntime via reflection
+            r'getMethod\s*\(\s*["\']getRuntime["\']\s*\)',
+            r'getDeclaredMethod\s*\(\s*["\']getRuntime["\']\s*\)',
+
+            # ProcessBuilder via reflection
+            r'Class\.forName\s*\(\s*["\']java\.lang\.ProcessBuilder["\']\s*\)',
+            r'forName\s*\(\s*.*ProcessBuilder.*\)',
+            r'Constructor.*ProcessBuilder',
+
+            # Dynamic class + method invocation with variables (taint)
+            r'Class\.forName\s*\(\s*[a-zA-Z_]\w*\s*\)',  # Variable class name
+            r'\.getMethod\s*\(\s*[a-zA-Z_]\w*\s*,',      # Variable method name
+            r'\.invoke\s*\(\s*\w+\s*,\s*\w+\s*\)',       # Generic invoke with variable args
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*invoke',
+            r'/\*.*invoke',
+            r'mock',
+            r'test',
+            r'\.invoke\s*\(\s*null\s*\)',  # Static method invocation on null
+        ],
+    ),
+    VulnerabilityPattern(
+        name="Reflection-Based Deserialization (Java)",
+        category=VulnCategory.DESERIALIZATION,
+        patterns=[
+            # ObjectInputStream via reflection
+            r'Class\.forName\s*\(\s*["\']java\.io\.ObjectInputStream["\']\s*\)',
+            r'forName\s*\(\s*["\'].*ObjectInputStream["\']\s*\)',
+            r'readObject\.invoke\s*\(',
+            r'getMethod\s*\(\s*["\']readObject["\']\s*\)',
+            r'getDeclaredMethod\s*\(\s*["\']readObject["\']\s*\)',
+
+            # Constructor.newInstance for OIS
+            r'constructor\.newInstance\s*\(\s*new\s+ByteArrayInputStream',
+            r'clazz\.getConstructor.*InputStream.*newInstance',
+
+            # XMLDecoder via reflection
+            r'forName\s*\(\s*["\'].*XMLDecoder["\']\s*\)',
+            r'getMethod\s*\(\s*["\']readObject["\']\s*\).*XMLDecoder',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'ObjectInputFilter',
+            r'SafeObjectInputStream',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="Reflection-Based ScriptEngine Injection (Java)",
+        category=VulnCategory.CODE_INJECTION,
+        patterns=[
+            # ScriptEngine via reflection
+            r'Class\.forName\s*\(\s*["\']javax\.script\.ScriptEngineManager["\']\s*\)',
+            r'forName\s*\(\s*["\'].*ScriptEngine.*["\']\s*\)',
+            r'getMethod\s*\(\s*["\']getEngineByName["\']\s*,',
+            r'getMethod\s*\(\s*["\']eval["\']\s*,\s*String\.class',
+            r'eval\.invoke\s*\(\s*engine',
+            r'eval\.invoke\s*\(',
+
+            # Dynamic engine invocation
+            r'\.invoke\s*\(\s*manager\s*,\s*["\']',  # getEngineByName invoke
+            r'engine\.getClass\s*\(\s*\)\.getMethod\s*\(\s*["\']eval["\']\s*',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*eval\.invoke',
+            r'mock',
+            r'test',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="Reflection-Based JNDI Lookup (Java)",
+        category=VulnCategory.CODE_INJECTION,
+        patterns=[
+            # InitialContext via reflection (Log4Shell style evasion)
+            r'Class\.forName\s*\(\s*["\']javax\.naming\.InitialContext["\']\s*\)',
+            r'forName\s*\(\s*["\'].*InitialContext["\']\s*\)',
+            r'getMethod\s*\(\s*["\']lookup["\']\s*,\s*String\.class',
+            r'lookup\.invoke\s*\(\s*ctx',
+            r'lookup\.invoke\s*\(',
+
+            # Context via reflection
+            r'forName\s*\(\s*["\']javax\.naming\.Context["\']\s*\)',
+            r'forName\s*\(\s*["\'].*Context["\']\s*\).*lookup',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*lookup\.invoke',
+            r'mock',
+            r'test',
+        ],
+    ),
+
+    # =========================================================================
+    # STRING OBFUSCATION EVASION DETECTION
+    # =========================================================================
+    VulnerabilityPattern(
+        name="Char Array String Obfuscation (Java)",
+        category=VulnCategory.CODE_INJECTION,
+        patterns=[
+            # Building dangerous strings from char arrays
+            r"char\s*\[\s*\]\s*\w*\s*=\s*\{\s*'[Rr]'\s*,\s*'[Uu]'\s*,\s*'[Nn]'\s*,\s*'[Tt]'\s*,\s*'[Ii]'\s*,\s*'[Mm]'\s*,\s*'[Ee]'\s*\}",
+            r"char\s*\[\s*\]\s*\w*\s*=\s*\{\s*'[Ee]'\s*,\s*'[Xx]'\s*,\s*'[Ee]'\s*,\s*'[Cc]'\s*\}",
+            r"char\s*\[\s*\]\s*\w*\s*=\s*\{\s*'[Pp]'\s*,\s*'[Rr]'\s*,\s*'[Oo]'\s*,\s*'[Cc]'\s*,\s*'[Ee]'\s*,\s*'[Ss]'\s*,\s*'[Ss]'\s*\}",
+
+            # new String(char[]) used with Class.forName or getMethod
+            r'new\s+String\s*\(\s*\w+\s*\).*Class\.forName',
+            r'new\s+String\s*\(\s*\w+\s*\).*getMethod',
+            r'Class\.forName\s*\(\s*.*new\s+String\s*\(\s*\w+\s*\)',
+            r'getMethod\s*\(\s*new\s+String\s*\(\s*\w+\s*\)',
+
+            # Generic pattern: building string from char array then using in reflection
+            r'new\s+String\s*\(\s*\w+\s*\)\s*\).*\.invoke',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*char\s*\[\s*\]',
+            r'test',
+            r'mock',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="Unicode Escape Obfuscation (Java)",
+        category=VulnCategory.CODE_INJECTION,
+        patterns=[
+            # Unicode escapes for "exec" - \u0065\u0078\u0065\u0063
+            r'\\u0065\\u0078\\u0065\\u0063',  # exec
+            r'\\u0052\\u0075\\u006e\\u0074\\u0069\\u006d\\u0065',  # Runtime
+            r'\\u0050\\u0072\\u006f\\u0063\\u0065\\u0073\\u0073',  # Process
+            r'\\u0067\\u0065\\u0074\\u0052\\u0075\\u006e\\u0074\\u0069\\u006d\\u0065',  # getRuntime
+            r'\\u0066\\u006f\\u0072\\u004e\\u0061\\u006d\\u0065',  # forName
+            r'\\u0065\\u0076\\u0061\\u006c',  # eval
+            r'\\u006c\\u006f\\u006f\\u006b\\u0075\\u0070',  # lookup
+
+            # Generic: multiple unicode escapes used in method invocation
+            r'getMethod\s*\(\s*["\']\\u00',
+            r'forName\s*\(\s*["\'].*\\u00',
+
+            # Unicode in string that gets passed to exec-like methods
+            r'["\']\\u00\d{2}[^"\']*["\']\s*\).*\.invoke',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*\\u00',
+            r'test',
+            r'mock',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="Reverse String Obfuscation (Java)",
+        category=VulnCategory.CODE_INJECTION,
+        patterns=[
+            # StringBuilder.reverse() to build dangerous strings
+            r'StringBuilder\s*\(\s*["\']cexe["\']\s*\)\s*\.reverse',  # exec
+            r'StringBuilder\s*\(\s*["\']emitnuRteg["\']\s*\)\s*\.reverse',  # getRuntime
+            r'StringBuilder\s*\(\s*["\']emaNrof["\']\s*\)\s*\.reverse',  # forName
+            r'StringBuilder\s*\(\s*["\']lave["\']\s*\)\s*\.reverse',  # eval
+            r'StringBuilder\s*\(\s*["\']pukool["\']\s*\)\s*\.reverse',  # lookup
+
+            # Generic: reverse() followed by toString() used in reflection
+            r'\.reverse\s*\(\s*\)\s*\.toString\s*\(\s*\).*getMethod',
+            r'\.reverse\s*\(\s*\)\s*\.toString\s*\(\s*\).*forName',
+            r'\.reverse\s*\(\s*\)\s*\.toString\s*\(\s*\).*\.invoke',
+
+            # StringBuffer.reverse pattern
+            r'StringBuffer.*\.reverse\s*\(\s*\).*exec',
+            r'StringBuffer.*\.reverse\s*\(\s*\).*getMethod',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*reverse',
+            r'test',
+            r'mock',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="Base64 Encoded Command Injection (Java)",
+        category=VulnCategory.CODE_INJECTION,
+        patterns=[
+            # Base64 decode followed by exec
+            r'Base64\.getDecoder\s*\(\s*\)\s*\.decode.*Runtime.*exec',
+            r'Base64\.getDecoder\s*\(\s*\)\s*\.decode.*\.exec\s*\(',
+            r'Base64\.decode.*\.exec\s*\(',
+            r'DatatypeConverter\.parseBase64Binary.*exec',
+
+            # Decoded bytes to String then exec
+            r'new\s+String\s*\(\s*.*decode.*\).*\.exec\s*\(',
+            r'new\s+String\s*\(\s*Base64.*\).*exec',
+            r'new\s+String\s*\(\s*.*Base64\.getDecoder.*\).*Runtime',
+
+            # Generic: Base64 -> ProcessBuilder
+            r'Base64.*ProcessBuilder',
+            r'decode.*ProcessBuilder\s*\(',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*Base64',
+            r'test',
+            r'mock',
+            r'log\.',
+        ],
+    ),
+
+    # =========================================================================
+    # STREAM-BASED SQL INJECTION
+    # =========================================================================
+    VulnerabilityPattern(
+        name="Stream-Based SQL Injection (Java)",
+        category=VulnCategory.SQL_INJECTION,
+        patterns=[
+            # Collectors.joining used to build SQL WHERE IN clauses
+            r'Collectors\.joining\s*\(\s*["\'],["\']\s*\).*executeQuery',
+            r'Collectors\.joining\s*\(\s*["\'].*["\'].*SELECT',
+            r'Collectors\.joining\s*\(\s*["\'].*["\'].*WHERE',
+            r'Collectors\.joining\s*\(\s*["\'].*["\'].*IN\s*\(',
+
+            # Stream.collect into SQL query
+            r'\.collect\s*\(.*Collectors\.joining.*\).*createStatement',
+            r'\.collect\s*\(.*Collectors\.joining.*\).*executeQuery',
+            r'\.collect\s*\(.*\).*["\']SELECT',
+
+            # String.join with SQL
+            r'String\.join\s*\(.*\).*executeQuery',
+            r'String\.join\s*\(.*\).*createStatement',
+            r'String\.join\s*\(.*\).*WHERE.*IN',
+
+            # Stream processing feeding SQL
+            r'\.stream\s*\(\s*\)\..*\.collect\s*\(.*\).*["\'].*SELECT',
+            r'userInputs\.stream\s*\(\s*\)',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'PreparedStatement',
+            r'setString',
+            r'//.*Collectors\.joining',
+        ],
+    ),
+
+    # =========================================================================
+    # SPRING FRAMEWORK SQL INJECTION
+    # =========================================================================
+    VulnerabilityPattern(
+        name="Spring JdbcTemplate SQL Injection (Java)",
+        category=VulnCategory.SQL_INJECTION,
+        patterns=[
+            # JdbcTemplate with string concatenation
+            r'jdbcTemplate\.queryForList\s*\(\s*["\'].*\+',
+            r'jdbcTemplate\.queryForList\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'jdbcTemplate\.queryForObject\s*\(\s*["\'].*\+',
+            r'jdbcTemplate\.queryForObject\s*\(\s*[a-zA-Z_]\w*\s*,',
+            r'jdbcTemplate\.queryForMap\s*\(\s*["\'].*\+',
+            r'jdbcTemplate\.queryForRowSet\s*\(\s*["\'].*\+',
+            r'jdbcTemplate\.query\s*\(\s*["\'].*\+',
+            r'jdbcTemplate\.update\s*\(\s*["\'].*\+',
+            r'jdbcTemplate\.execute\s*\(\s*["\'].*\+',
+
+            # Variable SQL passed to JdbcTemplate
+            r'jdbc\.queryForList\s*\(\s*sql\s*\)',
+            r'jdbc\.query\s*\(\s*sql\s*,',
+            r'jdbc\.update\s*\(\s*sql\s*\)',
+
+            # NamedParameterJdbcTemplate with concatenation
+            r'namedParameterJdbcTemplate\.query\s*\(\s*["\'].*\+',
+            r'namedJdbc\.query\s*\(\s*["\'].*\+',
+
+            # Spring Data JPA native query with concatenation
+            r'@Query\s*\(\s*value\s*=\s*["\'].*\+',
+            r'@Query\s*\(\s*nativeQuery\s*=\s*true.*["\'].*\$\{',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*jdbcTemplate',
+            r'\?\s*[,\)]',
+            r':\w+',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="MyBatis SQL Injection (Java)",
+        category=VulnCategory.SQL_INJECTION,
+        patterns=[
+            # MyBatis ${} injection (vulnerable) vs #{} (safe)
+            r'\$\{[^}]+\}',  # ${} is vulnerable
+            r'ORDER\s+BY\s+\$\{',
+            r'ORDER\s+BY\s+["\']\s*\+\s*\w+',
+            r'GROUP\s+BY\s+\$\{',
+            r'LIMIT\s+\$\{',
+
+            # Dynamic SQL building
+            r'<if\s+test=[^>]*>.*\$\{',
+            r'<where>.*\$\{',
+            r'<set>.*\$\{',
+
+            # Annotation-based queries with concatenation
+            r'@Select\s*\(\s*["\'].*\+',
+            r'@Insert\s*\(\s*["\'].*\+',
+            r'@Update\s*\(\s*["\'].*\+',
+            r'@Delete\s*\(\s*["\'].*\+',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".xml"],
+        false_positive_patterns=[
+            r'#\{[^}]+\}',  # Safe placeholder
+            r'//.*\$\{',
+        ],
+    ),
+
+    # =========================================================================
+    # SECOND-ORDER SQL INJECTION
+    # =========================================================================
+    VulnerabilityPattern(
+        name="Second-Order SQL Injection (Java)",
+        category=VulnCategory.SQL_INJECTION,
+        patterns=[
+            # Store data safely, then use unsafely later
+            # Pattern: PreparedStatement INSERT followed by concatenated SELECT
+            r'pstmt\.setString.*\n.*\n.*createStatement.*executeQuery\s*\(\s*["\'].*\+',
+
+            # Retrieving stored value and using in query
+            r'rs\.getString\s*\([^)]+\).*executeQuery',
+            r'resultSet\.getString\s*\([^)]+\).*createStatement',
+            r'getString\s*\([^)]+\).*["\'].*WHERE.*\+',
+
+            # Reading from DB and executing
+            r'\.getString\s*\(\s*["\'][^"\']+["\']\s*\).*\+.*executeQuery',
+
+            # Same variable used in safe insert then unsafe query
+            r'setString\s*\([^)]+,\s*(\w+)\s*\).*createStatement.*executeQuery\s*\([^)]*\1',
+        ],
+        severity=Severity.MEDIUM,
+        languages=[".java", ".kt", ".scala", ".groovy", ".py", ".php"],
+        false_positive_patterns=[
+            r'//.*second',
+            r'test',
+            r'mock',
+        ],
+    ),
+
+    # =========================================================================
+    # RACE CONDITIONS AND TOCTOU
+    # =========================================================================
+    VulnerabilityPattern(
+        name="TOCTOU Race Condition (Java)",
+        category=VulnCategory.AUTH_BYPASS,
+        patterns=[
+            # File check followed by sleep/wait followed by read
+            r'\.exists\s*\(\s*\).*Thread\.sleep.*Files\.read',
+            r'\.canRead\s*\(\s*\).*Thread\.sleep.*Files\.read',
+            r'\.isFile\s*\(\s*\).*Thread\.sleep.*Files\.read',
+            r'getCanonicalPath.*startsWith.*Thread\.sleep',
+            r'getCanonicalPath.*startsWith.*\.read',
+
+            # Check -> wait -> use pattern
+            r'if\s*\([^)]*\.exists.*\{[^}]*Thread\.sleep',
+            r'if\s*\([^)]*\.canRead.*\{[^}]*Thread\.sleep',
+            r'if\s*\([^)]*startsWith.*\{[^}]*Thread\.sleep',
+
+            # Path validation followed by file operations
+            r'getCanonicalPath\s*\(\s*\)\.startsWith.*Files\.readAllBytes',
+            r'toRealPath\s*\(\s*\).*Files\.read',
+
+            # Symlink vulnerable patterns
+            r'\.exists\s*\(\s*\).*\.toPath\s*\(\s*\)',
+            r'isDirectory\s*\(\s*\).*Files\.walk',
+        ],
+        severity=Severity.MEDIUM,
+        languages=[".java", ".kt", ".scala", ".groovy", ".py", ".go", ".c", ".cpp"],
+        false_positive_patterns=[
+            r'//.*TOCTOU',
+            r'test',
+            r'mock',
+            r'synchronized',
+            r'lock',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="Non-Atomic Authentication Check (Java)",
+        category=VulnCategory.AUTH_BYPASS,
+        patterns=[
+            # HashMap for login attempts (not thread-safe)
+            r'HashMap\s*<\s*String\s*,\s*Integer\s*>\s*\w*\s*=.*login',
+            r'HashMap.*loginAttempts',
+            r'HashMap.*attempts',
+            r'new\s+HashMap.*password',
+            r'new\s+HashMap.*auth',
+
+            # getOrDefault followed by put without sync
+            r'\.getOrDefault\s*\([^)]+\)\s*;[^}]*\.put\s*\(',
+            r'\.get\s*\([^)]+\)[^}]*\.put\s*\([^)]+,\s*\w+\s*\+\s*1',
+
+            # Non-atomic increment patterns
+            r'attempts\s*=\s*\w+\.get.*attempts\s*\+\s*1',
+            r'int\s+attempts.*\.put\s*\([^)]+,\s*attempts\s*\+',
+
+            # Check and act without synchronization
+            r'if\s*\(\s*\w+\s*>=\s*\d+\s*\)[^}]*return\s+false.*\.put\s*\(',
+        ],
+        severity=Severity.MEDIUM,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'ConcurrentHashMap',
+            r'synchronized',
+            r'AtomicInteger',
+            r'ReentrantLock',
+            r'\.lock\s*\(',
+        ],
+    ),
+
+    # =========================================================================
+    # DESERIALIZATION GADGET CHAINS
+    # =========================================================================
+    VulnerabilityPattern(
+        name="Deserialization Gadget - InvokerTransformer (Java)",
+        category=VulnCategory.DESERIALIZATION,
+        patterns=[
+            # Commons Collections InvokerTransformer
+            r'InvokerTransformer',
+            r'org\.apache\.commons\.collections\.functors\.InvokerTransformer',
+            r'org\.apache\.commons\.collections4\.functors\.InvokerTransformer',
+
+            # ChainedTransformer with dangerous transformers
+            r'ChainedTransformer',
+            r'ConstantTransformer.*InvokerTransformer',
+            r'InstantiateTransformer',
+
+            # TransformerMap/LazyMap (triggers)
+            r'LazyMap\.decorate',
+            r'TransformedMap\.decorate',
+
+            # Creating InvokerTransformer via reflection
+            r'forName\s*\(\s*["\'].*InvokerTransformer["\']\s*\)',
+            r'getConstructor.*InvokerTransformer',
+            r'newInstance.*exec.*String\.class',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*InvokerTransformer',
+            r'test',
+            r'mock',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="Deserialization Gadget - TemplatesImpl (Java)",
+        category=VulnCategory.DESERIALIZATION,
+        patterns=[
+            # TemplatesImpl bytecode injection
+            r'TemplatesImpl',
+            r'com\.sun\.org\.apache\.xalan\.internal\.xsltc\.trax\.TemplatesImpl',
+
+            # Setting bytecode via reflection
+            r'_bytecodes',
+            r'setAccessible.*_bytecodes',
+            r'getDeclaredField\s*\(\s*["\']_bytecodes["\']\s*\)',
+
+            # Related dangerous fields
+            r'_name',
+            r'_tfactory',
+            r'_class',
+            r'getDeclaredField\s*\(\s*["\']_name["\']\s*\)',
+            r'getDeclaredField\s*\(\s*["\']_tfactory["\']\s*\)',
+
+            # newTransformer trigger
+            r'\.newTransformer\s*\(\s*\)',
+            r'getMethod\s*\(\s*["\']newTransformer["\']\s*\)',
+
+            # TransletClassLoader
+            r'TransletClassLoader',
+            r'AbstractTranslet',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*TemplatesImpl',
+            r'test',
+            r'mock',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="Custom readObject Gadget (Java)",
+        category=VulnCategory.DESERIALIZATION,
+        patterns=[
+            # Dangerous readObject implementations
+            r'private\s+void\s+readObject\s*\(\s*ObjectInputStream',
+            r'readObject\s*\(\s*\).*Runtime\.getRuntime',
+            r'readObject\s*\(\s*\).*\.exec\s*\(',
+            r'readObject\s*\(\s*\).*ProcessBuilder',
+            r'readObject\s*\(\s*\).*ScriptEngine',
+            r'readObject\s*\(\s*\).*\.invoke\s*\(',
+
+            # defaultReadObject followed by dangerous code
+            r'defaultReadObject\s*\(\s*\).*exec',
+            r'defaultReadObject\s*\(\s*\).*ProcessBuilder',
+            r'defaultReadObject\s*\(\s*\).*Runtime',
+
+            # ObjectInputStream.readObject inside readObject
+            r'ois\.readObject\s*\(\s*\).*\.exec',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*readObject',
+            r'ObjectInputFilter',
+            r'test',
+        ],
+    ),
+
+    # =========================================================================
+    # CRYPTOGRAPHIC WEAKNESSES
+    # =========================================================================
+    VulnerabilityPattern(
+        name="Weak Crypto - ECB Mode (Java)",
+        category=VulnCategory.AUTH_BYPASS,
+        patterns=[
+            # ECB mode detection (including evasion via concatenation)
+            r'Cipher\.getInstance\s*\(\s*["\']AES/ECB',
+            r'Cipher\.getInstance\s*\(\s*["\']DES/ECB',
+            r'Cipher\.getInstance\s*\(\s*["\']DESede/ECB',
+            r'Cipher\.getInstance\s*\(\s*["\']Blowfish/ECB',
+
+            # ECB via string concatenation (evasion)
+            r'["\']AES["\']\s*\+\s*["\']\/["\']\s*\+\s*["\']ECB["\']\s*\+',
+            r'["\']AES["\']\s*\+\s*["\']\/ECB',
+            r'transformation\s*=\s*["\']AES["\']\s*\+\s*.*ECB',
+            r'"AES"\s*\+\s*"/"\s*\+\s*"ECB"',
+
+            # AES without mode (defaults to ECB)
+            r'Cipher\.getInstance\s*\(\s*["\']AES["\']\s*\)',
+            r'Cipher\.getInstance\s*\(\s*["\']DES["\']\s*\)',
+
+            # Variable mode that might be ECB
+            r'Cipher\.getInstance\s*\(\s*[a-zA-Z_]\w*\s*\)',
+        ],
+        severity=Severity.MEDIUM,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*ECB',
+            r'CBC',
+            r'GCM',
+            r'CTR',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="Weak Key Derivation (Java)",
+        category=VulnCategory.AUTH_BYPASS,
+        patterns=[
+            # Password bytes used directly as key
+            r'password\.getBytes.*SecretKeySpec',
+            r'new\s+SecretKeySpec\s*\(\s*\w*[Pp]assword\w*\.getBytes',
+            r'new\s+SecretKeySpec\s*\(\s*\w+\.getBytes.*AES',
+
+            # Arrays.copyOf on password bytes
+            r'Arrays\.copyOf\s*\(\s*\w*[Pp]assword\w*\.getBytes',
+            r'Arrays\.copyOf\s*\(\s*keyBytes\s*,\s*16',
+
+            # String to key directly
+            r'new\s+SecretKeySpec\s*\(\s*["\'][^"\']+["\']\s*\.getBytes',
+
+            # Padding password to key size
+            r'paddedKey\s*=.*copyOf.*getBytes',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'PBKDF2',
+            r'SecretKeyFactory',
+            r'PBEKeySpec',
+            r'//.*weak',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="Predictable IV/Nonce (Java)",
+        category=VulnCategory.AUTH_BYPASS,
+        patterns=[
+            # All-zero IV
+            r'new\s+byte\s*\[\s*16\s*\].*IvParameterSpec',
+            r'IvParameterSpec\s*\(\s*new\s+byte\s*\[\s*16\s*\]',
+            r'IvParameterSpec\s*\(\s*new\s+byte\s*\[\s*12\s*\]',  # GCM nonce
+            r'iv\s*=\s*new\s+byte\s*\[\s*16\s*\]',
+
+            # Static/hardcoded IV
+            r'static\s+.*byte\s*\[\s*\].*IV',
+            r'final\s+byte\s*\[\s*\].*=\s*\{[^}]+\}.*iv',
+            r'STATIC.*IV',
+
+            # Reusing IV
+            r'IvParameterSpec\s*\(\s*["\'][^"\']+["\']\s*\.getBytes',
+
+            # Zero-filled arrays for IV
+            r'Arrays\.fill\s*\(\s*iv\s*,\s*\(byte\)\s*0',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'SecureRandom',
+            r'\.generateSeed',
+            r'//.*predictable',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="Static/Weak Salt (Java)",
+        category=VulnCategory.AUTH_BYPASS,
+        patterns=[
+            # Static salt
+            r'static\s+.*byte\s*\[\s*\].*[Ss]alt',
+            r'static\s+final\s+.*SALT',
+            r'STATIC_SALT',
+            r'final\s+byte\s*\[\s*\].*[Ss]alt\s*=\s*["\']',
+
+            # Hardcoded salt string
+            r'salt\s*=\s*["\'][^"\']+["\']\s*\.getBytes',
+            r'\.getBytes.*PBEKeySpec',
+            r'new\s+PBEKeySpec.*["\'][^"\']+["\']\s*\.getBytes',
+
+            # Same salt for all users
+            r'private\s+static\s+final\s+byte\s*\[\s*\]\s+SALT',
+
+            # Empty salt
+            r'salt\s*=\s*new\s+byte\s*\[\s*0\s*\]',
+            r'salt\s*=\s*["\']["\']',
+        ],
+        severity=Severity.MEDIUM,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'SecureRandom',
+            r'\.generateSeed',
+            r'//.*static.*salt',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="Insufficient PBKDF2 Iterations (Java)",
+        category=VulnCategory.AUTH_BYPASS,
+        patterns=[
+            # Low iteration count (less than 10000)
+            r'PBEKeySpec\s*\([^)]*,\s*\d{1,3}\s*,',  # 1-999 iterations
+            r'PBEKeySpec\s*\([^)]*,\s*1\d{3}\s*,',   # 1000-1999 iterations
+            r'iterations\s*=\s*\d{1,3}\s*;',
+            r'iterations\s*=\s*100\s*;',
+            r'iterations\s*=\s*1000\s*;',
+
+            # Magic numbers in PBKDF2
+            r'SecretKeyFactory.*PBEKeySpec.*,\s*100\s*,',
+            r'SecretKeyFactory.*PBEKeySpec.*,\s*1000\s*,',
+
+            # Variable with low value
+            r'ITERATIONS\s*=\s*\d{1,4}\s*;',
+            r'ITERATION_COUNT\s*=\s*\d{1,4}\s*;',
+        ],
+        severity=Severity.MEDIUM,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*iterations',
+            r'100000',
+            r'10000',
+            r'310000',  # OWASP recommended
+        ],
+    ),
+
+    # =========================================================================
+    # LAMBDA AND FUNCTIONAL INTERFACE INJECTION
+    # =========================================================================
+    VulnerabilityPattern(
+        name="Lambda-Based Code Injection (Java)",
+        category=VulnCategory.CODE_INJECTION,
+        patterns=[
+            # Supplier with ScriptEngine.eval
+            r'Supplier.*engine\.eval\s*\(\s*\w+',
+            r'Supplier.*ScriptEngine.*eval',
+            r'\(\s*\)\s*->\s*\{[^}]*engine\.eval',
+            r'\(\s*\)\s*->\s*\{[^}]*\.eval\s*\(\s*code',
+
+            # Function with Runtime.exec
+            r'Function.*Runtime\.getRuntime.*exec',
+            r'Function.*\.exec\s*\(\s*\w+',
+            r'\w+\s*->\s*\{[^}]*Runtime.*exec',
+            r'cmd\s*->\s*\{[^}]*Process\s*p\s*=',
+
+            # Consumer/BiConsumer with exec
+            r'Consumer.*\.exec\s*\(',
+            r'BiConsumer.*\.exec\s*\(',
+
+            # CompletableFuture with code execution
+            r'CompletableFuture\.supplyAsync.*engine\.eval',
+            r'CompletableFuture\.supplyAsync.*\.exec\s*\(',
+            r'supplyAsync\s*\(\s*\(\s*\)\s*->\s*\{[^}]*eval',
+            r'supplyAsync\s*\(\s*\(\s*\)\s*->\s*\{[^}]*exec',
+
+            # runAsync with code execution
+            r'CompletableFuture\.runAsync.*engine\.eval',
+            r'runAsync.*Runtime\.getRuntime',
+
+            # ForkJoinPool with exec
+            r'ForkJoinPool.*exec\s*\(',
+            r'ForkJoinTask.*exec\s*\(',
+
+            # Method references to dangerous methods
+            r'Runtime::exec',
+            r'ProcessBuilder::start',
+            r'ScriptEngine::eval',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*Lambda',
+            r'test',
+            r'mock',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="Async Code Injection (Java)",
+        category=VulnCategory.CODE_INJECTION,
+        patterns=[
+            # ExecutorService with dangerous code
+            r'ExecutorService.*submit.*engine\.eval',
+            r'ExecutorService.*submit.*\.exec\s*\(',
+            r'executor\.submit\s*\(\s*\(\s*\)\s*->\s*\{[^}]*eval',
+            r'executor\.submit\s*\(\s*\(\s*\)\s*->\s*\{[^}]*exec',
+
+            # ScheduledExecutorService
+            r'ScheduledExecutorService.*exec\s*\(',
+            r'scheduler\.schedule.*exec',
+            r'scheduler\.schedule.*eval',
+
+            # Parallel streams with dangerous operations
+            r'\.parallelStream\s*\(\s*\).*exec\s*\(',
+            r'\.parallelStream\s*\(\s*\).*eval\s*\(',
+
+            # Thread pool with code injection
+            r'ThreadPoolExecutor.*exec\s*\(',
+            r'newFixedThreadPool.*exec',
+            r'newCachedThreadPool.*exec',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*Async',
+            r'test',
+            r'mock',
+        ],
+    ),
+
+    # =========================================================================
+    # EXPRESSION LANGUAGE INJECTION (OGNL, MVEL, JEXL, SpEL)
+    # =========================================================================
+    VulnerabilityPattern(
+        name="OGNL Injection (Java)",
+        category=VulnCategory.CODE_INJECTION,
+        patterns=[
+            # Direct OGNL usage
+            r'Ognl\.getValue\s*\(\s*\w+',
+            r'Ognl\.setValue\s*\(\s*\w+',
+            r'OgnlUtil\.getValue\s*\(',
+            r'OgnlUtil\.setValue\s*\(',
+
+            # OGNL via reflection
+            r'forName\s*\(\s*["\']ognl\.Ognl["\']\s*\)',
+            r'getMethod\s*\(\s*["\']getValue["\']\s*,\s*String\.class',
+
+            # Struts2 OGNL patterns
+            r'OgnlValueStack.*findValue',
+            r'ActionContext.*get\s*\(',
+            r'%\{.*#.*\}',
+
+            # OGNL Context manipulation
+            r'OgnlContext',
+            r'_memberAccess',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*OGNL',
+            r'test',
+            r'mock',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="MVEL Injection (Java)",
+        category=VulnCategory.CODE_INJECTION,
+        patterns=[
+            # MVEL.eval with variable
+            r'MVEL\.eval\s*\(\s*\w+\s*\)',
+            r'MVEL\.eval\s*\(\s*expression',
+            r'MVEL\.evalToString\s*\(',
+            r'MVEL\.compileExpression\s*\(\s*\w+',
+            r'MVEL\.executeExpression\s*\(',
+
+            # MVEL via reflection
+            r'forName\s*\(\s*["\']org\.mvel2\.MVEL["\']\s*\)',
+            r'getMethod\s*\(\s*["\']eval["\']\s*,\s*String\.class.*MVEL',
+
+            # MVELRuntime
+            r'MVELRuntime.*eval',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*MVEL',
+            r'test',
+            r'mock',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="JEXL Injection (Java)",
+        category=VulnCategory.CODE_INJECTION,
+        patterns=[
+            # JEXL3 patterns
+            r'JexlBuilder\s*\(\s*\)\.create\s*\(',
+            r'jexlEngine\.createExpression\s*\(\s*\w+',
+            r'jexlEngine\.createScript\s*\(\s*\w+',
+            r'\.evaluate\s*\(\s*.*JexlContext',
+
+            # JEXL via reflection
+            r'forName\s*\(\s*["\']org\.apache\.commons\.jexl3["\']\s*\)',
+            r'forName\s*\(\s*["\'].*JexlBuilder["\']\s*\)',
+
+            # JEXL2 (legacy)
+            r'JexlEngine\s*\(\s*\)',
+            r'new\s+JexlEngine\s*\(',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".java", ".kt", ".scala", ".groovy"],
+        false_positive_patterns=[
+            r'//.*JEXL',
+            r'test',
+            r'mock',
+            r'JexlBuilder.*sandbox',
+        ],
+    ),
+    VulnerabilityPattern(
+        name="EL Injection (JSP/JSF)",
+        category=VulnCategory.CODE_INJECTION,
+        patterns=[
+            # ExpressionFactory usage
+            r'ExpressionFactory\.newInstance\s*\(',
+            r'expressionFactory\.createValueExpression\s*\(',
+            r'expressionFactory\.createMethodExpression\s*\(',
+
+            # EL via reflection
+            r'forName\s*\(\s*["\']javax\.el\.ExpressionFactory["\']\s*\)',
+            r'forName\s*\(\s*["\']jakarta\.el\.ExpressionFactory["\']\s*\)',
+
+            # ELProcessor
+            r'ELProcessor\s*\(\s*\)',
+            r'elProcessor\.eval\s*\(',
+            r'elProcessor\.getValue\s*\(',
+            r'elProcessor\.setValue\s*\(',
+
+            # ValueExpression evaluation
+            r'valueExpression\.getValue\s*\(',
+            r'methodExpression\.invoke\s*\(',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".groovy", ".jsp"],
+        false_positive_patterns=[
+            r'//.*EL',
+            r'test',
+            r'mock',
         ],
     ),
 
@@ -5986,6 +7564,7 @@ class VulnerabilityScanner:
                 "eval": VulnCategory.CODE_INJECTION,
                 "prototype": VulnCategory.PROTOTYPE_POLLUTION,
                 "pollution": VulnCategory.PROTOTYPE_POLLUTION,
+                "xxe": VulnCategory.XXE,
             }
             self.active_categories = {category_map[c] for c in categories if c in category_map}
 
@@ -6476,7 +8055,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Categories:
-  sql, postgresql, nosql, xpath, deserialization, auth, ssti, ssrf, code/eval, all
+  sql, postgresql, nosql, xpath, deserialization, auth, ssti, ssrf, code/eval, xxe, all
 
 Examples:
   python3 %(prog)s /path/to/project
@@ -6497,7 +8076,7 @@ Examples:
 
     parser.add_argument(
         "--category", "-c", nargs="+",
-        choices=["sql", "postgresql", "nosql", "xpath", "deserialization", "auth", "ssti", "ssrf", "code", "eval", "prototype", "pollution", "all"],
+        choices=["sql", "postgresql", "nosql", "xpath", "deserialization", "auth", "ssti", "ssrf", "code", "eval", "prototype", "pollution", "xxe", "all"],
         default=["all"], help="Categories to scan"
     )
 
