@@ -1504,52 +1504,38 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
     ),
 
     # =========================================================================
-    # SQL INJECTION PATTERNS
+    # SQL INJECTION PATTERNS - ENHANCED WITH TAINT TRACKING HEURISTICS
+    # =========================================================================
+    #
+    # These patterns detect SQL injection including evasion techniques like:
+    # - Variable indirection (passing query through variables)
+    # - StringBuilder/StringBuffer construction
+    # - Method return values used in queries
+    # - Format methods and string interpolation
+    #
     # =========================================================================
 
     VulnerabilityPattern(
         name="SQL Injection - String Concatenation",
         category=VulnCategory.SQL_INJECTION,
         patterns=[
-            # Basic SQL statement concatenation (CRITICAL)
+            # Direct concatenation
             r'["\']SELECT\s+.+\s+FROM\s+.+["\']\s*\+',
             r'["\']INSERT\s+INTO\s+.+["\']\s*\+',
             r'["\']UPDATE\s+.+\s+SET\s+.+["\']\s*\+',
             r'["\']DELETE\s+FROM\s+.+["\']\s*\+',
             r'["\']DROP\s+.+["\']\s*\+',
-
-            # WHERE clause concatenation (common injection point)
+            # WHERE clause concatenation
             r'["\'].*WHERE\s+\w+\s*=\s*[\'"]?\s*["\']\s*\+',
-            r'WHERE\s+\w+\s*=\s*[\'"]?\s*["\']\s*\+\s*\w+\s*\+\s*["\']',
             r'["\'].*AND\s+\w+\s*=\s*["\']\s*\+',
             r'["\'].*OR\s+\w+\s*=\s*["\']\s*\+',
-
-            # Variable assignment with SQL + concatenation
+            # Variable assignment with SQL
             r'=\s*["\']SELECT\s+.+["\']\s*\+',
             r'=\s*["\']INSERT\s+.+["\']\s*\+',
             r'=\s*["\']UPDATE\s+.+["\']\s*\+',
             r'=\s*["\']DELETE\s+.+["\']\s*\+',
-
-            # SQL built with + operator containing user variable
+            # Generic string building
             r'["\']\s*\+\s*\w+\s*\+\s*["\']',
-
-            # ORDER BY / GROUP BY / LIMIT injection
-            r'["\'].*ORDER\s+BY\s*["\']\s*\+',
-            r'["\'].*GROUP\s+BY\s*["\']\s*\+',
-            r'["\'].*HAVING\s+.+["\']\s*\+',
-            r'["\'].*LIMIT\s*["\']\s*\+',
-            r'["\'].*OFFSET\s*["\']\s*\+',
-
-            # Table/Column name injection
-            r'["\']SELECT\s+["\']\s*\+\s*\w+\s*\+\s*["\']',
-            r'["\']FROM\s+["\']\s*\+',
-            r'["\']INTO\s+["\']\s*\+',
-
-            # Execute methods with concatenation
-            r'executeQuery\s*\(\s*["\'].*\+',
-            r'executeUpdate\s*\(\s*["\'].*\+',
-            r'executeSql\s*\(\s*["\'].*\+',
-            r'execute\s*\(\s*["\'].*SELECT.*\+',
         ],
         severity=Severity.CRITICAL,
         languages=[".js", ".ts", ".jsx", ".tsx", ".py", ".php", ".java", ".cs", ".rb", ".go", ".kt"],
@@ -1560,12 +1546,192 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'PreparedStatement',
             r'prepareStatement',
             r'\+\s*["\']["\']',
-            r'\+\s*["\'][\s,)]+["\']',
             r'\?\s*[,\)]',
             r'setString\s*\(',
             r'setInt\s*\(',
-            r'setLong\s*\(',
             r'setParameter\s*\(',
+        ],
+    ),
+
+    VulnerabilityPattern(
+        name="SQL Injection - Variable Passed to Execute (Taint Sink)",
+        category=VulnCategory.SQL_INJECTION,
+        patterns=[
+            # Java Statement.execute with variable (not string literal)
+            r'\.execute\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'\.executeQuery\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'\.executeUpdate\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            # Java Statement.execute with method call result
+            r'\.execute\s*\(\s*\w+\s*\.\s*\w+\s*\([^)]*\)\s*\)',
+            r'\.executeQuery\s*\(\s*\w+\s*\.\s*\w+\s*\([^)]*\)\s*\)',
+            r'\.executeUpdate\s*\(\s*\w+\s*\.\s*\w+\s*\([^)]*\)\s*\)',
+            # Spring JdbcTemplate with variable
+            r'jdbcTemplate\.query\s*\(\s*[a-zA-Z_]\w*\s*,',
+            r'jdbcTemplate\.queryForList\s*\(\s*[a-zA-Z_]\w*\s*,',
+            r'jdbcTemplate\.queryForObject\s*\(\s*[a-zA-Z_]\w*\s*,',
+            r'jdbcTemplate\.update\s*\(\s*[a-zA-Z_]\w*\s*[,\)]',
+            r'jdbcTemplate\.execute\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            # Python cursor.execute with variable
+            r'cursor\.execute\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'cur\.execute\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'\.execute\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            # C# SqlCommand with variable
+            r'SqlCommand\s*\(\s*[a-zA-Z_]\w*\s*,',
+            r'\.CommandText\s*=\s*[a-zA-Z_]\w*\s*;',
+            # Go db.Query with variable
+            r'db\.Query\s*\(\s*[a-zA-Z_]\w*\s*\)',
+            r'db\.Exec\s*\(\s*[a-zA-Z_]\w*\s*\)',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".py", ".cs", ".go"],
+        false_positive_patterns=[
+            r'PreparedStatement',
+            r'prepareStatement',
+            r'prepare\s*\(',
+            r'\?\s*[,\)]',
+            r'@\w+',
+            r':\w+',
+            r'setString',
+            r'setInt',
+            r'setParameter',
+            r'bindParam',
+            r'\.prepare\s*\(',
+            # Constant/static query names
+            r'QUERY\s*\)',
+            r'SQL\s*\)',
+            r'_QUERY\s*\)',
+            r'_SQL\s*\)',
+        ],
+    ),
+
+    VulnerabilityPattern(
+        name="SQL Injection - StringBuilder/StringBuffer Query Construction",
+        category=VulnCategory.SQL_INJECTION,
+        patterns=[
+            # StringBuilder with SQL keywords
+            r'StringBuilder\s*\([^)]*SELECT',
+            r'StringBuilder\s*\([^)]*INSERT',
+            r'StringBuilder\s*\([^)]*UPDATE',
+            r'StringBuilder\s*\([^)]*DELETE',
+            r'StringBuilder\s*\([^)]*WHERE',
+            # StringBuffer with SQL keywords
+            r'StringBuffer\s*\([^)]*SELECT',
+            r'StringBuffer\s*\([^)]*INSERT',
+            r'StringBuffer\s*\([^)]*UPDATE',
+            r'StringBuffer\s*\([^)]*DELETE',
+            # Append with SQL keywords
+            r'\.append\s*\(\s*["\'].*SELECT',
+            r'\.append\s*\(\s*["\'].*INSERT',
+            r'\.append\s*\(\s*["\'].*UPDATE',
+            r'\.append\s*\(\s*["\'].*DELETE',
+            r'\.append\s*\(\s*["\'].*WHERE',
+            r'\.append\s*\(\s*["\'].*FROM',
+            # Append with variable (potential tainted data)
+            r'\.append\s*\(\s*[a-zA-Z_]\w*\s*\).*\.append',
+            # StringBuilder.toString() used in execute
+            r'\.execute\w*\s*\(\s*\w+\.toString\s*\(\s*\)\s*\)',
+            # Python string builder patterns
+            r'\+=\s*["\'].*SELECT',
+            r'\+=\s*["\'].*WHERE',
+            r'\.join\s*\([^)]*SELECT',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".py", ".cs"],
+        false_positive_patterns=[
+            r'PreparedStatement',
+            r'//.*StringBuilder',
+            r'#.*StringBuilder',
+            r'log\.',
+            r'LOG\.',
+            r'logger\.',
+        ],
+    ),
+
+    VulnerabilityPattern(
+        name="SQL Injection - Query Built via Method Return (Indirect Taint)",
+        category=VulnCategory.SQL_INJECTION,
+        patterns=[
+            # Method that returns/builds SQL (common naming patterns)
+            r'def\s+\w*(query|sql|build|get|create|make|format|generate)\w*\s*\([^)]*\)\s*.*(?:SELECT|INSERT|UPDATE|DELETE)',
+            r'function\s+\w*(query|sql|build|get|create|make|format|generate)\w*\s*\([^)]*\)',
+            r'private\s+String\s+\w*(query|sql|build|get|create|make|format|generate)\w*\s*\(',
+            r'public\s+String\s+\w*(query|sql|build|get|create|make|format|generate)\w*\s*\(',
+            r'protected\s+String\s+\w*(query|sql|build|get|create|make|format|generate)\w*\s*\(',
+            # Return statement with SQL
+            r'return\s+["\']SELECT\s+',
+            r'return\s+["\']INSERT\s+',
+            r'return\s+["\']UPDATE\s+',
+            r'return\s+["\']DELETE\s+',
+            r'return\s+\w+\s*\+\s*["\']',
+            r'return\s+.*\.toString\s*\(\s*\)',
+            # Variable assignment from method that might build SQL
+            r'\w+\s*=\s*\w*(build|format|get|create|make|generate)\w*\s*\([^)]*\)',
+        ],
+        severity=Severity.MEDIUM,
+        languages=[".java", ".kt", ".scala", ".py", ".js", ".ts", ".cs", ".rb", ".go"],
+        false_positive_patterns=[
+            r'//.*return',
+            r'#.*return',
+            r'PreparedStatement',
+            r'parameterized',
+            r'sanitize',
+            r'escape',
+            r'validate',
+        ],
+    ),
+
+    VulnerabilityPattern(
+        name="SQL Injection - Dangerous SQL Construction Patterns",
+        category=VulnCategory.SQL_INJECTION,
+        patterns=[
+            # String.valueOf or toString on user input going to SQL
+            r'String\.valueOf\s*\([^)]+\).*(?:SELECT|INSERT|UPDATE|DELETE|WHERE)',
+            r'\.toString\s*\(\s*\).*(?:SELECT|INSERT|UPDATE|DELETE|WHERE)',
+            # Character-by-character building (like LogicTrap)
+            r'for\s*\([^)]*char[^)]*\).*\.append',
+            r'for\s*\([^)]*toCharArray[^)]*\)',
+            r'\.toCharArray\s*\(\s*\).*append',
+            # Map.get used in SQL context
+            r'\.get\s*\([^)]+\).*(?:SELECT|INSERT|UPDATE|DELETE|WHERE)',
+            r'(?:SELECT|INSERT|UPDATE|DELETE|WHERE).*\.get\s*\(',
+            # Params/args used in SQL
+            r'params\.get\s*\([^)]+\)',
+            r'args\s*\[\s*\d+\s*\].*(?:SELECT|INSERT|UPDATE|DELETE)',
+            r'request\.getParameter.*(?:SELECT|INSERT|UPDATE|DELETE)',
+        ],
+        severity=Severity.HIGH,
+        languages=[".java", ".kt", ".scala", ".py", ".js", ".ts", ".cs"],
+        false_positive_patterns=[
+            r'PreparedStatement',
+            r'//.*String\.valueOf',
+            r'log\.',
+            r'LOG\.',
+        ],
+    ),
+
+    VulnerabilityPattern(
+        name="SQL Injection - Statement Without Parameterization",
+        category=VulnCategory.SQL_INJECTION,
+        patterns=[
+            # createStatement() followed by execute (should use prepareStatement)
+            r'createStatement\s*\(\s*\)',
+            # Statement object usage (not PreparedStatement)
+            r'Statement\s+\w+\s*=',
+            r'Statement\s+\w+\s*;',
+            # Python cursor without params
+            r'cursor\.execute\s*\(\s*[^,\)]+\s*\)(?!\s*,)',
+            # Direct query execution without placeholders
+            r'\.query\s*\(\s*[^?@:]+\s*\)(?!\s*,\s*\[)',
+        ],
+        severity=Severity.MEDIUM,
+        languages=[".java", ".kt", ".py"],
+        false_positive_patterns=[
+            r'PreparedStatement',
+            r'prepareStatement',
+            r'//.*Statement',
+            r'#.*cursor',
+            r'\.execute\s*\([^,]+,\s*[\[\(]',
+            r'\.execute\s*\([^,]+,\s*\{',
         ],
     ),
 
@@ -1579,24 +1745,18 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'`UPDATE\s+.+\s+SET\s+.+\$\{',
             r'`DELETE\s+FROM\s+.+\$\{',
             r'`.*WHERE\s+.+=\s*\$\{',
-            r'`.*ORDER\s+BY\s+\$\{',
-            r'`.*LIMIT\s+\$\{',
-
             # Python f-strings
             r'f["\']SELECT\s+.+\s+FROM\s+.+\{',
             r'f["\']INSERT\s+INTO\s+.+\{',
             r'f["\']UPDATE\s+.+\s+SET\s+.+\{',
             r'f["\']DELETE\s+FROM\s+.+\{',
             r'f["\'].*WHERE\s+.+=\s*.*\{',
-            r'f["\'].*ORDER\s+BY\s+.*\{',
-
             # C# interpolated strings
             r'\$"SELECT\s+.+\s+FROM\s+.+\{',
             r'\$"INSERT\s+INTO\s+.+\{',
             r'\$"UPDATE\s+.+\s+SET\s+.+\{',
             r'\$"DELETE\s+FROM\s+.+\{',
             r'\$".*WHERE\s+.+=\s*\{',
-
             # Ruby string interpolation
             r'["\']SELECT\s+.+\s+FROM\s+.+#\{',
             r'["\'].*WHERE\s+.+=\s*.*#\{',
@@ -1620,17 +1780,12 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'["\'].*WHERE\s+.+%s.*["\'].*%\s*[\(\[]',
             r'["\']SELECT\s+.+["\']\.format\s*\(',
             r'["\'].*WHERE\s+.+["\']\.format\s*\(',
-
             # C# String.Format
             r'String\.Format\s*\(\s*["\']SELECT\s+.+\{0',
             r'string\.Format\s*\(\s*["\']SELECT\s+.+\{0',
-            r'String\.Format\s*\(\s*["\'].*WHERE\s+.+\{0',
-
             # Go fmt.Sprintf
             r'fmt\.Sprintf\s*\(\s*["\']SELECT\s+.+%',
             r'fmt\.Sprintf\s*\(\s*["\'].*WHERE\s+.+%',
-            r'fmt\.Sprintf\s*\(\s*`SELECT\s+.+%',
-
             # Java String.format
             r'String\.format\s*\(\s*["\']SELECT\s+.+%',
             r'String\.format\s*\(\s*["\'].*WHERE\s+.+%',
@@ -1644,60 +1799,6 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
     ),
 
     VulnerabilityPattern(
-        name="SQL Injection - Raw Query Methods",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-            # Node.js ORMs with concatenation
-            r'\.raw\s*\(\s*["\']SELECT.+\+',
-            r'\.raw\s*\(\s*`SELECT[^`]*\$\{',
-            r'sequelize\.query\s*\(\s*["\']SELECT.+\+',
-            r'sequelize\.query\s*\(\s*`SELECT[^`]*\$\{',
-            r'knex\.raw\s*\(\s*["\']SELECT.+\+',
-            r'knex\.raw\s*\(\s*`SELECT[^`]*\$\{',
-
-            # Prisma unsafe methods
-            r'prisma\.\$queryRaw\s*`[^`]*\$\{',
-            r'prisma\.\$executeRaw\s*`[^`]*\$\{',
-            r'prisma\.\$queryRawUnsafe\s*\(',
-            r'prisma\.\$executeRawUnsafe\s*\(',
-
-            # Python SQLAlchemy unsafe
-            r'text\s*\(\s*f["\']SELECT',
-            r'text\s*\(\s*f["\'].*WHERE',
-            r'\.execute\s*\(\s*f["\']SELECT',
-            r'\.execute\s*\(\s*f["\'].*WHERE',
-            r'engine\.execute\s*\(\s*f["\']',
-            r'session\.execute\s*\(\s*f["\']',
-
-            # Django unsafe
-            r'\.extra\s*\(\s*where\s*=\s*\[',
-            r'\.extra\s*\(\s*select\s*=\s*\{',
-            r'RawSQL\s*\(\s*f["\']',
-            r'cursor\.execute\s*\(\s*f["\']',
-
-            # Ruby ActiveRecord unsafe
-            r'\.find_by_sql\s*\(\s*["\'].*#\{',
-            r'\.execute\s*\(\s*["\'].*#\{',
-            r'\.select_all\s*\(\s*["\'].*#\{',
-
-            # C# Entity Framework unsafe
-            r'FromSqlRaw\s*\(\s*\$"SELECT',
-            r'ExecuteSqlRaw\s*\(\s*\$"',
-            r'SqlQuery\s*\(\s*\$"SELECT',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".js", ".ts", ".py", ".cs", ".rb"],
-        false_positive_patterns=[
-            r'\?\s*[,\)]',
-            r'\$\d+',
-            r':\w+',
-            r'@\w+',
-            r'bindparams',
-            r'\.bind\s*\(',
-        ],
-    ),
-
-    VulnerabilityPattern(
         name="SQL Injection - PHP MySQL",
         category=VulnCategory.SQL_INJECTION,
         patterns=[
@@ -1707,21 +1808,15 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'["\']UPDATE\s+.+\$_(GET|POST|REQUEST|COOKIE)',
             r'["\']DELETE\s+FROM\s+.+\$_(GET|POST|REQUEST|COOKIE)',
             r'["\'].*WHERE\s+.+\$_(GET|POST|REQUEST|COOKIE)',
-
             # Variable concatenation
             r'["\']SELECT\s+.+["\']\s*\.\s*\$\w+',
             r'["\'].*WHERE\s+.+["\']\s*\.\s*\$\w+',
-
-            # Deprecated mysql_* functions (always dangerous)
+            # Deprecated mysql_* functions
             r'mysql_query\s*\(\s*["\']',
             r'mysql_db_query\s*\(',
-            r'mysql_unbuffered_query\s*\(',
-
             # mysqli/PDO without prepared statements
             r'mysqli_query\s*\(\s*\$\w+,\s*["\'].*\.\s*\$',
-            r'mysqli_multi_query\s*\(\s*\$\w+,\s*["\'].*\$',
             r'\$pdo->query\s*\(\s*["\'].*\.\s*\$',
-            r'\$\w+->query\s*\(\s*["\'].*\.\s*\$',
         ],
         severity=Severity.CRITICAL,
         languages=[".php"],
@@ -1729,199 +1824,46 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'->prepare\s*\(',
             r'bindParam',
             r'bindValue',
-            r'execute\s*\(\s*\[',
-            r'\$pdo',
             r'\$stmt',
         ],
     ),
 
     VulnerabilityPattern(
-        name="SQL Injection - Java JDBC",
+        name="SQL Injection - Raw Query Methods",
         category=VulnCategory.SQL_INJECTION,
         patterns=[
-            # Statement (not PreparedStatement) with concatenation
-            r'createStatement\s*\(\s*\).*execute\w*\s*\(\s*["\'].*\+',
-            r'statement\.execute\w*\s*\(\s*["\'].*\+',
-            r'stmt\.execute\w*\s*\(\s*["\'].*\+',
-
-            # String building with SQL keywords
-            r'StringBuilder.*append\s*\(\s*["\'].*SELECT',
-            r'StringBuffer.*append\s*\(\s*["\'].*SELECT',
-            r'StringBuilder.*append\s*\(\s*["\'].*WHERE',
-            r'StringBuffer.*append\s*\(\s*["\'].*WHERE',
-
-            # Spring JDBC without parameterization
-            r'jdbcTemplate\.query\s*\(\s*["\'].*\+',
-            r'jdbcTemplate\.queryForList\s*\(\s*["\'].*\+',
-            r'jdbcTemplate\.queryForObject\s*\(\s*["\'].*\+',
-            r'jdbcTemplate\.queryForMap\s*\(\s*["\'].*\+',
-            r'jdbcTemplate\.update\s*\(\s*["\'].*\+',
-            r'jdbcTemplate\.execute\s*\(\s*["\'].*\+',
-            r'namedParameterJdbcTemplate\.query\s*\(\s*["\'].*\+',
-
-            # Variable SQL query passed to execute methods
-            r'jdbcTemplate\.queryForList\s*\(\s*\w+\s*,',
-            r'jdbcTemplate\.query\s*\(\s*\w+\s*,',
-            r'statement\.executeQuery\s*\(\s*\w+\s*\)',
-            r'stmt\.executeQuery\s*\(\s*\w+\s*\)',
-
-            # Hibernate HQL injection
-            r'createQuery\s*\(\s*["\'].*\+',
-            r'createNativeQuery\s*\(\s*["\'].*\+',
-            r'createSQLQuery\s*\(\s*["\'].*\+',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".java", ".kt"],
-        false_positive_patterns=[
-            r'PreparedStatement',
-            r'prepareStatement',
-            r'\?\s*[,\)]',
-            r'setString\s*\(',
-            r'setInt\s*\(',
-            r'setLong\s*\(',
-            r'setParameter\s*\(',
-            r'createNamedQuery',
-            r'@Param',
-            r':\w+',
-        ],
-    ),
-
-    VulnerabilityPattern(
-        name="SQL Injection - Python Database APIs",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-            # Direct cursor execution with f-strings
-            r'cursor\.execute\s*\(\s*f["\']SELECT',
-            r'cursor\.execute\s*\(\s*f["\'].*WHERE',
-            r'cur\.execute\s*\(\s*f["\']SELECT',
+            # Node.js ORMs
+            r'\.raw\s*\(\s*["\']SELECT.+\+',
+            r'\.raw\s*\(\s*`SELECT[^`]*\$\{',
+            r'sequelize\.query\s*\(\s*["\']SELECT.+\+',
+            r'knex\.raw\s*\(\s*["\']SELECT.+\+',
+            # Prisma unsafe
+            r'prisma\.\$queryRaw\s*`[^`]*\$\{',
+            r'prisma\.\$queryRawUnsafe\s*\(',
+            r'prisma\.\$executeRawUnsafe\s*\(',
+            # Python SQLAlchemy
+            r'text\s*\(\s*f["\']SELECT',
             r'\.execute\s*\(\s*f["\']SELECT',
-            r'\.execute\s*\(\s*f["\']INSERT',
-            r'\.execute\s*\(\s*f["\']UPDATE',
-            r'\.execute\s*\(\s*f["\']DELETE',
-
-            # String formatting in execute
-            r'\.execute\s*\(\s*["\']SELECT.*%s.*["\'].*%\s*[\(\[]',
-            r'\.execute\s*\(\s*["\'].*WHERE.*%s.*["\'].*%\s*[\(\[]',
-            r'\.execute\s*\(\s*["\']SELECT.*["\']\.format\s*\(',
-            r'\.execute\s*\(\s*["\'].*WHERE.*["\']\.format\s*\(',
-            r'\.executemany\s*\(\s*f["\']',
-
-            # asyncpg unsafe
-            r'connection\.fetch\s*\(\s*f["\']SELECT',
-            r'connection\.execute\s*\(\s*f["\']',
-            r'pool\.fetch\s*\(\s*f["\']SELECT',
+            r'engine\.execute\s*\(\s*f["\']',
+            # Django
+            r'\.extra\s*\(\s*where\s*=\s*\[',
+            r'RawSQL\s*\(\s*f["\']',
+            r'cursor\.execute\s*\(\s*f["\']',
+            # Ruby ActiveRecord
+            r'\.find_by_sql\s*\(\s*["\'].*#\{',
+            r'\.execute\s*\(\s*["\'].*#\{',
+            # C# Entity Framework
+            r'FromSqlRaw\s*\(\s*\$"SELECT',
+            r'ExecuteSqlRaw\s*\(\s*\$"',
         ],
         severity=Severity.CRITICAL,
-        languages=[".py"],
+        languages=[".js", ".ts", ".py", ".cs", ".rb"],
         false_positive_patterns=[
-            r'execute\s*\(\s*["\'][^"\']*["\'],\s*[\[\(]',
-            r'execute\s*\(\s*["\'][^"\']*["\'],\s*\{',
-            r'%\(\w+\)s',
-            r'mogrify',
-            r':\w+',
-        ],
-    ),
-
-    VulnerabilityPattern(
-        name="SQL Injection - Go Database/SQL",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-            # fmt.Sprintf with SQL
-            r'db\.Query\s*\(\s*fmt\.Sprintf\s*\(\s*["`]SELECT',
-            r'db\.QueryRow\s*\(\s*fmt\.Sprintf\s*\(\s*["`]SELECT',
-            r'db\.Exec\s*\(\s*fmt\.Sprintf\s*\(\s*["`]',
-            r'tx\.Query\s*\(\s*fmt\.Sprintf\s*\(',
-            r'tx\.Exec\s*\(\s*fmt\.Sprintf\s*\(',
-
-            # String concatenation
-            r'db\.Query\s*\(\s*["`]SELECT.*\+',
-            r'db\.Exec\s*\(\s*["`].*\+',
-
-            # GORM raw queries
-            r'\.Raw\s*\(\s*fmt\.Sprintf',
-            r'\.Exec\s*\(\s*fmt\.Sprintf',
-
-            # sqlx
-            r'sqlx\.Get\s*\(.*fmt\.Sprintf',
-            r'sqlx\.Select\s*\(.*fmt\.Sprintf',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".go"],
-        false_positive_patterns=[
-            r'\$\d+',
             r'\?\s*[,\)]',
-            r'\.Rebind\s*\(',
-        ],
-    ),
-
-    VulnerabilityPattern(
-        name="SQL Injection - C# ADO.NET",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-            # SqlCommand with interpolation/concatenation
-            r'new\s+SqlCommand\s*\(\s*\$"SELECT',
-            r'new\s+SqlCommand\s*\(\s*\$".*WHERE',
-            r'new\s+SqlCommand\s*\(\s*["\']SELECT.*\+',
-            r'SqlCommand\s*\(\s*\$"SELECT',
-            r'CommandText\s*=\s*\$"SELECT',
-            r'CommandText\s*=\s*["\']SELECT.*\+',
-
-            # OleDb/Odbc
-            r'new\s+OleDbCommand\s*\(\s*\$"SELECT',
-            r'new\s+OdbcCommand\s*\(\s*\$"SELECT',
-
-            # SqlDataAdapter
-            r'new\s+SqlDataAdapter\s*\(\s*\$"SELECT',
-            r'new\s+SqlDataAdapter\s*\(\s*["\']SELECT.*\+',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".cs"],
-        false_positive_patterns=[
+            r'\$\d+',
+            r':\w+',
             r'@\w+',
-            r'Parameters\.Add',
-            r'Parameters\.AddWithValue',
-            r'\.Parameters\[',
-        ],
-    ),
-
-    VulnerabilityPattern(
-        name="SQL Injection - C# Entity Framework",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-            # Raw SQL methods with interpolation
-            r'\.FromSqlRaw\s*\(\s*\$"SELECT',
-            r'\.FromSqlRaw\s*\(\s*["\']SELECT.*\+',
-            r'\.ExecuteSqlRaw\s*\(\s*\$"',
-            r'\.ExecuteSqlRaw\s*\(\s*["\'].*\+',
-            r'\.SqlQuery\s*\(\s*\$"SELECT',
-            r'Database\.ExecuteSqlCommand\s*\(\s*\$"',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".cs"],
-        false_positive_patterns=[
-            r'FromSqlInterpolated',
-            r'@\w+',
-            r'Parameters',
-        ],
-    ),
-
-    VulnerabilityPattern(
-        name="SQL Injection - C# Dapper",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-            r'\.Query\s*(<[^>]+>)?\s*\(\s*\$"SELECT',
-            r'\.Query\s*(<[^>]+>)?\s*\(\s*["\']SELECT.*\+',
-            r'\.Execute\s*\(\s*\$"',
-            r'\.Execute\s*\(\s*["\'].*\+',
-            r'\.QueryFirst\w*\s*(<[^>]+>)?\s*\(\s*\$"SELECT',
-            r'\.QuerySingle\w*\s*(<[^>]+>)?\s*\(\s*\$"SELECT',
-            r'\.QueryMultiple\s*\(\s*\$"SELECT',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".cs"],
-        false_positive_patterns=[
-            r'@\w+',
-            r',\s*new\s*\{',
+            r'bindparams',
         ],
     ),
 
@@ -1932,14 +1874,11 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             # Building queries from database values
             r'\.execute\s*\(\s*row\[',
             r'\.execute\s*\(\s*result\[',
-            r'\.execute\s*\(\s*record\.',
             r'executeQuery\s*\(\s*rs\.getString',
             r'executeQuery\s*\(\s*resultSet\.get',
-
-            # Using session/cookie data in queries
+            # Using session/cookie data
             r'["\']SELECT.*["\']\s*\+\s*session\.',
             r'["\']SELECT.*["\']\s*\+\s*Session\[',
-            r'["\']SELECT.*["\']\s*\+\s*cookie',
         ],
         severity=Severity.HIGH,
         languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go"],
@@ -1947,59 +1886,24 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
     ),
 
     VulnerabilityPattern(
-        name="PostgreSQL Injection - Dangerous Functions",
-        category=VulnCategory.POSTGRESQL_INJECTION,
-        patterns=[
-            # File system access
-            r'pg_read_file\s*\(',
-            r'pg_read_binary_file\s*\(',
-            r'pg_ls_dir\s*\(',
-            r'pg_stat_file\s*\(',
-
-            # Large object operations
-            r'lo_import\s*\(',
-            r'lo_export\s*\(',
-
-            # COPY command with variables
-            r'COPY\s+\w+\s+FROM\s+.*[\$\{#]',
-            r'COPY\s+\w+\s+TO\s+.*[\$\{#]',
-
-            # Code execution via procedural languages
-            r'CREATE\s+FUNCTION.*LANGUAGE\s+(plpython|plperl|pltcl)',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go", ".sql"],
-        false_positive_patterns=[],
-    ),
-
-    VulnerabilityPattern(
         name="SQL Injection - ORM Bypass/Unsafe Methods",
         category=VulnCategory.SQL_INJECTION,
         patterns=[
-            # Django unsafe
+            # Django
             r'\.extra\s*\(\s*where\s*=\s*\[.*%',
-            r'\.extra\s*\(\s*select\s*=\s*\{.*%',
             r'RawSQL\s*\(\s*["\'].*%',
             r'RawSQL\s*\(\s*f["\']',
-
-            # SQLAlchemy unsafe
+            # SQLAlchemy
             r'text\s*\(\s*["\'].*%.*["\']',
             r'text\s*\(\s*f["\']',
             r'literal_column\s*\(\s*f["\']',
-
-            # Sequelize unsafe
+            # Sequelize
             r'sequelize\.literal\s*\(\s*["\'].*\+',
-            r'sequelize\.literal\s*\(\s*`.*\$\{',
             r'Sequelize\.literal\s*\(\s*["\'].*\+',
-
-            # ActiveRecord unsafe
+            # ActiveRecord
             r'\.where\s*\(\s*["\'].*#\{',
             r'\.order\s*\(\s*["\'].*#\{',
-            r'\.pluck\s*\(\s*["\'].*#\{',
-            r'\.group\s*\(\s*["\'].*#\{',
-            r'\.having\s*\(\s*["\'].*#\{',
-
-            # Hibernate HQL unsafe
+            # Hibernate HQL
             r'createQuery\s*\(\s*["\'].*\+\s*\w+',
             r'createNativeQuery\s*\(\s*["\'].*\+\s*\w+',
         ],
@@ -2012,6 +1916,7 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'setParameter',
         ],
     ),
+
     # =========================================================================
     # NOSQL INJECTION PATTERNS - ENTERPRISE GRADE COMPREHENSIVE DETECTION
     # =========================================================================
@@ -3874,6 +3779,15 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         false_positive_patterns=[
 
             r'getDeclaredConstructor',
+            r'clazz\.',
+            r'Class\.forName',
+            r'\.newInstance\(\)',r'getDeclaredConstructor',
+            r'clazz\.',
+            r'Class\.forName',
+            r'\.newInstance\(\)',r'getDeclaredConstructor',
+            r'clazz\.',
+            r'Class\.forName',
+            r'\.newInstance\(\)',r'getDeclaredConstructor',
             r'clazz\.',
             r'Class\.forName',
             r'\.newInstance\(\)',r'render_template\s*\(\s*["\'][^"\']+\.(html|jinja|j2)',
