@@ -16,6 +16,10 @@
 
 A **cross-platform static code analysis tool** for detecting security vulnerabilities in source code. Supports 15+ programming languages with .NET DLL decompilation, JAR/APK analysis, and comprehensive vulnerability pattern detection.
 
+**Now with dual scanning modes:**
+- **Regex-based scanning** (`vuln-scanner.py`) - Fast, comprehensive pattern matching
+- **AST-based scanning** (`ast-scanner.py`) - Deep code analysis with taint tracking for reduced false positives
+
 ---
 
 ## ✨ Features
@@ -51,6 +55,22 @@ A **cross-platform static code analysis tool** for detecting security vulnerabil
 - **JAR/WAR/APK** archive extraction and analysis
 - **String extraction** from compiled binaries
 - **Credential detection** in binaries (AWS keys, API tokens, connection strings)
+
+### 🧠 AST-Based Scanner (ast-scanner.py)
+A secondary scanner providing deeper code analysis through:
+- **Taint Tracking** - Traces user input through variable assignments
+- **Data Flow Analysis** - Follows data from sources to dangerous sinks
+- **Context-Aware Detection** - Understands function calls, imports, and code structure
+- **Confidence Scoring** - HIGH/MEDIUM/LOW confidence ratings for each finding
+- **Reduced False Positives** - Semantic analysis filters out safe patterns
+
+| Feature | vuln-scanner.py | ast-scanner.py |
+|---------|-----------------|----------------|
+| Speed | Fast | Moderate |
+| Languages | 15+ | Python, JavaScript/TypeScript |
+| Analysis Depth | Pattern matching | AST + Taint tracking |
+| False Positive Rate | Higher | Lower |
+| Use Case | Broad scanning | Deep analysis |
 
 ---
 
@@ -96,6 +116,26 @@ python3 vuln-scanner.py /path/to/project --category sql code auth ssrf
 python3 vuln-scanner.py /path/to/project --category all
 ```
 
+### AST-Based Scanner Usage
+
+```bash
+# Basic scan with AST analysis
+python3 ast-scanner.py /path/to/project
+
+# Verbose output showing taint tracking
+python3 ast-scanner.py /path/to/project -v
+
+# Scan specific categories with confidence filtering
+python3 ast-scanner.py /path/to/project --category sql code ssrf --min-confidence HIGH
+
+# Output as JSON
+python3 ast-scanner.py /path/to/project --output json -o ast-report.json
+
+# Combined workflow: Use both scanners
+python3 vuln-scanner.py /path/to/project -o regex-report.json --output json
+python3 ast-scanner.py /path/to/project -o ast-report.json --output json
+```
+
 ### Binary Analysis
 
 ```bash
@@ -110,6 +150,8 @@ python3 vuln-scanner.py /path/to/app.dll --scan-binaries --decompile
 
 ## 📋 Command Line Options
 
+### vuln-scanner.py (Regex-based)
+
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--output` | | Output format: `text` (default) or `json` |
@@ -123,6 +165,16 @@ python3 vuln-scanner.py /path/to/app.dll --scan-binaries --decompile
 | `--exclude-ext` | | File extensions to exclude |
 | `--include-ext` | | Only scan these extensions |
 | `--no-default-excludes` | | Don't use default exclusion lists |
+
+### ast-scanner.py (AST-based)
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--output` | | Output format: `text` (default) or `json` |
+| `--output-file` | `-o` | Save report to file |
+| `--verbose` | `-v` | Show detailed scanning progress with taint tracking |
+| `--category` | `-c` | Categories: sql, nosql, code, command, deser, ssti, ssrf, auth, proto, xpath, xxe, path |
+| `--min-confidence` | | Minimum confidence level: HIGH, MEDIUM, LOW (default) |
 
 ---
 
@@ -155,6 +207,49 @@ FILE: api/handlers/auth.js
 --------------------------------------------------------------------------------
 [HIGH] Auth Bypass - Hardcoded Credentials
   Line 12: const API_KEY = "sk_live_abc123xyz789"
+```
+
+### AST Scanner Sample Output
+
+```
+================================================================================
+AST-BASED VULNERABILITY SCAN REPORT
+================================================================================
+Scan Date: 2026-01-23 14:30:00
+Files Scanned: 45
+Parse Errors: 0
+Total Findings: 12
+
+Summary by Severity:
+  CRITICAL  : 3
+  HIGH      : 5
+  MEDIUM    : 4
+
+Summary by Confidence:
+  HIGH      : 6
+  MEDIUM    : 4
+  LOW       : 2
+
+================================================================================
+
+FILE: app/services/database.py
+--------------------------------------------------------------------------------
+[CRITICAL] SQL Injection - execute() with tainted query (Confidence: HIGH)
+  Line 23: cursor.execute(query)
+  -> User-controlled data used in SQL query without parameterization.
+  Taint: request: request.args.get('id') (line 21)
+
+[HIGH] SSRF - requests.get() with user-controlled URL (Confidence: HIGH)
+  Line 45: response = requests.get(target_url)
+  -> User-controlled URL can lead to Server-Side Request Forgery.
+  Taint: request: request.form['url'] (line 43)
+
+FILE: app/utils/template.py
+--------------------------------------------------------------------------------
+[CRITICAL] SSTI - render_template_string() with user input (Confidence: HIGH)
+  Line 18: return render_template_string(user_template)
+  -> Flask render_template_string() with user input enables SSTI.
+  Taint: request: request.args.get('template') (line 15)
 ```
 
 ---
@@ -241,10 +336,22 @@ unserialize($_GET['data'])  # ✅ Detected
 
 ```
 vuln-scanner/
-├── vuln-scanner.py      # Main scanner
+├── vuln-scanner.py      # Regex-based scanner (fast, comprehensive)
+├── ast-scanner.py       # AST-based scanner (deep analysis, lower FP)
 ├── README.md
 └── LICENSE
 ```
+
+### When to Use Each Scanner
+
+| Scenario | Recommended Scanner |
+|----------|---------------------|
+| Initial broad scan of large codebase | vuln-scanner.py |
+| Deep analysis of critical files | ast-scanner.py |
+| CI/CD pipeline quick check | vuln-scanner.py |
+| Reviewing specific vulnerability reports | ast-scanner.py (with --min-confidence HIGH) |
+| Scanning non-Python/JS languages | vuln-scanner.py |
+| Taint tracking analysis | ast-scanner.py |
 
 ---
 
