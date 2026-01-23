@@ -818,203 +818,547 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
     # =========================================================================
     
     VulnerabilityPattern(
-        name="SQL Injection - String Concatenation",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-            r'["\']SELECT\s+.+\s+FROM\s+.+["\']\s*\+',
-            r'["\']INSERT\s+INTO\s+.+["\']\s*\+',
-            r'["\']UPDATE\s+.+\s+SET\s+.+["\']\s*\+',
-            r'["\']DELETE\s+FROM\s+.+["\']\s*\+',
-            r'["\']DROP\s+.+["\']\s*\+',
-            r'executeQuery\s*\(\s*["\'].*\+',
-            r'executeUpdate\s*\(\s*["\'].*\+',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".js", ".ts", ".jsx", ".tsx", ".py", ".php", ".java", ".cs", ".rb", ".go", ".kt"],
-        false_positive_patterns=[r'//.*SELECT', r'#.*SELECT', r'PreparedStatement'],
-    ),
-    VulnerabilityPattern(
-        name="SQL Injection - Template Literals/F-strings",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-            r'`SELECT\s+.+\s+FROM\s+.+\$\{',
-            r'`INSERT\s+INTO\s+.+\$\{',
-            r'`UPDATE\s+.+\s+SET\s+.+\$\{',
-            r'`DELETE\s+FROM\s+.+\$\{',
-            r'f["\']SELECT\s+.+\{',
-            r'f["\']INSERT\s+.+\{',
-            r'f["\']UPDATE\s+.+\{',
-            r'f["\']DELETE\s+.+\{',
-            r'\$"SELECT\s+.+\{',
-            r'\$"INSERT\s+.+\{',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".js", ".ts", ".jsx", ".tsx", ".py", ".cs"],
-    ),
-    VulnerabilityPattern(
-        name="SQL Injection - Format String",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-            r'["\']SELECT\s+.+["\'].*%\s*\(',
-            r'["\']SELECT\s+.+["\']\.format\s*\(',
-            r'String\.Format\s*\(\s*["\']SELECT',
-            r'string\.Format\s*\(\s*["\']SELECT',
-            r'fmt\.Sprintf\s*\(\s*["\']SELECT',
-            r'sprintf\s*\(\s*["\']SELECT',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".py", ".php", ".go", ".cs", ".java"],
-    ),
-    VulnerabilityPattern(
-        name="SQL Injection - Raw Query Methods",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-            r'\.raw\s*\(\s*["\']',
-            r'\.raw\s*\(\s*`',
-            r'\.raw\s*\(\s*f["\']',
-            r'sequelize\.query\s*\(',
-            r'knex\.raw\s*\(',
-            r'prisma\.\$queryRaw',
-            r'prisma\.\$executeRaw',
-            r'RawSQL\s*\(',
-            r'text\s*\(\s*f["\']',
-            r'FromSqlRaw\s*\(\s*\$"',
-            r'ExecuteSqlRaw\s*\(\s*\$"',
-            r'SqlQuery\s*\(\s*\$"',
-            r'ExecuteSqlCommand\s*\(\s*\$"',
-        ],
-        severity=Severity.HIGH,
-        languages=[".js", ".ts", ".py", ".cs"],
-        false_positive_patterns=[r'\?\s*\)', r'\$\d+', r'bindparams', r'@\w+'],
-    ),
-    VulnerabilityPattern(
-        name="SQL Injection - PHP MySQL",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-            r'["\']SELECT\s+.+\$_(GET|POST|REQUEST|COOKIE)',
-            r'["\']SELECT\s+.+["\']\s*\.\s*\$',
-            r'mysql_query\s*\(\s*["\'].*\$',
-            r'mysqli_query\s*\(\s*\$\w+,\s*["\'].*\$',
-            r'mysql_query\s*\(',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".php"],
-    ),
-    
-    # =========================================================================
-    # C# SPECIFIC SQL INJECTION
-    # =========================================================================
-    
-    VulnerabilityPattern(
-        name="SQL Injection - C# String Interpolation",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-            r'\$".*SELECT.*\{',
-            r'\$".*INSERT.*\{',
-            r'\$".*UPDATE.*\{',
-            r'\$".*DELETE.*\{',
-            r'\$".*WHERE.*\{',
-            r'SqlCommand\s*\(\s*\$"',
-            r'new\s+SqlCommand\s*\(\s*["\'].*\+',
-            r'CommandText\s*=\s*\$"',
-            r'CommandText\s*=\s*["\'].*\+',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".cs"],
-        false_positive_patterns=[r'@\w+', r'Parameters\.Add'],
-    ),
-    VulnerabilityPattern(
-        name="SQL Injection - C# Entity Framework Raw",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-            r'\.FromSqlRaw\s*\(\s*\$"',
-            r'\.FromSqlRaw\s*\(\s*["\'].*\+',
-            r'\.ExecuteSqlRaw\s*\(\s*\$"',
-            r'\.ExecuteSqlRaw\s*\(\s*["\'].*\+',
-            r'\.SqlQuery\s*\(\s*\$"',
-            r'Database\.ExecuteSqlCommand\s*\(\s*\$"',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".cs"],
-    ),
-    VulnerabilityPattern(
-        name="SQL Injection - C# Dapper",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-            r'\.Query\s*\(\s*\$".*SELECT',
-            r'\.Query<.*>\s*\(\s*\$"',
-            r'\.Execute\s*\(\s*\$"',
-            r'\.QueryFirst.*\(\s*\$"',
-            r'\.QuerySingle.*\(\s*\$"',
-        ],
-        severity=Severity.HIGH,
-        languages=[".cs"],
-        false_positive_patterns=[r'@\w+'],
-    ),
+    name="SQL Injection - String Concatenation",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # Basic SQL statement concatenation
+        r'["\']SELECT\s+.+\s+FROM\s+.+["\']\s*\+',
+        r'["\']INSERT\s+INTO\s+.+["\']\s*\+',
+        r'["\']UPDATE\s+.+\s+SET\s+.+["\']\s*\+',
+        r'["\']DELETE\s+FROM\s+.+["\']\s*\+',
+        r'["\']DROP\s+.+["\']\s*\+',
+        
+        # WHERE clause concatenation (common injection point)
+        r'["\'].*WHERE\s+.+["\']\s*\+\s*(?!["\']\s*AND\s*["\'])',
+        r'["\'].*AND\s+.+["\']\s*\+',
+        r'["\'].*OR\s+.+["\']\s*\+',
+        
+        # ORDER BY / GROUP BY injection
+        r'["\'].*ORDER\s+BY\s*["\']\s*\+',
+        r'["\'].*GROUP\s+BY\s*["\']\s*\+',
+        r'["\'].*HAVING\s+.+["\']\s*\+',
+        
+        # LIMIT/OFFSET injection
+        r'["\'].*LIMIT\s*["\']\s*\+',
+        r'["\'].*OFFSET\s*["\']\s*\+',
+        
+        # Table/Column name injection
+        r'["\']SELECT\s+["\']\s*\+\s*\w+\s*\+\s*["\']',
+        r'["\']FROM\s+["\']\s*\+',
+        r'["\']INTO\s+["\']\s*\+',
+        
+        # Execute methods with concatenation
+        r'executeQuery\s*\(\s*["\'].*\+',
+        r'executeUpdate\s*\(\s*["\'].*\+',
+        r'executeSql\s*\(\s*["\'].*\+',
+        r'execute\s*\(\s*["\'].*SELECT.*\+',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".js", ".ts", ".jsx", ".tsx", ".py", ".php", ".java", ".cs", ".rb", ".go", ".kt"],
+    false_positive_patterns=[
+        r'//.*SELECT',
+        r'#.*SELECT',
+        r'PreparedStatement',
+        r'\+\s*["\']["\']',           # Empty string concat
+        r'\+\s*["\'][\s,)]+["\']',    # Whitespace/punctuation only
+    ],
+),
 
-    # =========================================================================
-    # POSTGRESQL SPECIFIC INJECTION
-    # =========================================================================
+VulnerabilityPattern(
+    name="SQL Injection - Template Literals/F-strings",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # JavaScript template literals
+        r'`SELECT\s+.+\s+FROM\s+.+\$\{',
+        r'`INSERT\s+INTO\s+.+\$\{',
+        r'`UPDATE\s+.+\s+SET\s+.+\$\{',
+        r'`DELETE\s+FROM\s+.+\$\{',
+        r'`.*WHERE\s+.+\$\{',
+        r'`.*ORDER\s+BY\s+\$\{',
+        r'`.*LIMIT\s+\$\{',
+        
+        # Python f-strings
+        r'f["\']SELECT\s+.+\{',
+        r'f["\']INSERT\s+.+\{',
+        r'f["\']UPDATE\s+.+\{',
+        r'f["\']DELETE\s+.+\{',
+        r'f["\'].*WHERE\s+.+\{',
+        r'f["\'].*ORDER\s+BY\s+\{',
+        
+        # C# interpolated strings
+        r'\$"SELECT\s+.+\{',
+        r'\$"INSERT\s+.+\{',
+        r'\$"UPDATE\s+.+\{',
+        r'\$"DELETE\s+.+\{',
+        r'\$".*WHERE\s+.+\{',
+        
+        # Ruby string interpolation
+        r'["\']SELECT\s+.+#\{',
+        r'["\'].*WHERE\s+.+#\{',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".js", ".ts", ".jsx", ".tsx", ".py", ".cs", ".rb"],
+    false_positive_patterns=[
+        r'\{[\d:,]+\}',               # Format specifiers like {0}, {:d}
+        r'\{\s*\?\s*\}',              # Placeholder pattern
+    ],
+),
 
-    VulnerabilityPattern(
-        name="PostgreSQL Injection - COPY Command",
-        category=VulnCategory.POSTGRESQL_INJECTION,
-        patterns=[
-            r'COPY\s+.+\s+FROM\s+.+\$',
-            r'COPY\s+.+\s+TO\s+.+\$',
-            r'pg_read_file\s*\(',
-            r'pg_read_binary_file\s*\(',
-            r'pg_ls_dir\s*\(',
-            r'lo_import\s*\(',
-            r'lo_export\s*\(',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go"],
-    ),
+VulnerabilityPattern(
+    name="SQL Injection - Format String",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # Python % formatting
+        r'["\']SELECT\s+.+["\'].*%\s*\(',
+        r'["\'].*WHERE\s+.+%s.*["\'].*%\s*\(',
+        r'["\']SELECT\s+.+["\']\.format\s*\(',
+        r'["\'].*WHERE\s+.+["\']\.format\s*\(',
+        
+        # C# String.Format
+        r'String\.Format\s*\(\s*["\']SELECT',
+        r'string\.Format\s*\(\s*["\']SELECT',
+        r'String\.Format\s*\(\s*["\'].*WHERE',
+        
+        # Go fmt.Sprintf
+        r'fmt\.Sprintf\s*\(\s*["\']SELECT',
+        r'fmt\.Sprintf\s*\(\s*["\'].*WHERE',
+        r'fmt\.Sprintf\s*\(\s*`SELECT',
+        
+        # C sprintf
+        r'sprintf\s*\(\s*\w+,\s*["\']SELECT',
+        r'snprintf\s*\(\s*\w+,\s*\d+,\s*["\']SELECT',
+        
+        # Java String.format
+        r'String\.format\s*\(\s*["\']SELECT',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".py", ".php", ".go", ".cs", ".java", ".c", ".cpp"],
+    false_positive_patterns=[
+        r'%\(\w+\)s',                 # Python named parameters
+    ],
+),
 
+VulnerabilityPattern(
+    name="SQL Injection - Raw Query Methods",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # Node.js ORMs
+        r'\.raw\s*\(\s*["\'].*\+',
+        r'\.raw\s*\(\s*`[^`]*\$\{',
+        r'sequelize\.query\s*\(\s*["\'].*\+',
+        r'sequelize\.query\s*\(\s*`[^`]*\$\{',
+        r'knex\.raw\s*\(\s*["\'].*\+',
+        r'knex\.raw\s*\(\s*`[^`]*\$\{',
+        
+        # Prisma
+        r'prisma\.\$queryRaw\s*`[^`]*\$\{',
+        r'prisma\.\$executeRaw\s*`[^`]*\$\{',
+        r'prisma\.\$queryRawUnsafe\s*\(',
+        r'prisma\.\$executeRawUnsafe\s*\(',
+        
+        # Python SQLAlchemy
+        r'text\s*\(\s*f["\']',
+        r'\.execute\s*\(\s*f["\']SELECT',
+        r'\.execute\s*\(\s*f["\'].*WHERE',
+        r'engine\.execute\s*\(\s*f["\']',
+        r'session\.execute\s*\(\s*f["\']',
+        r'connection\.execute\s*\(\s*f["\']',
+        
+        # Django
+        r'\.extra\s*\(\s*where\s*=',
+        r'\.extra\s*\(\s*select\s*=',
+        r'RawSQL\s*\(\s*f["\']',
+        r'cursor\.execute\s*\(\s*f["\']',
+        
+        # Ruby ActiveRecord
+        r'\.find_by_sql\s*\(\s*["\'].*#\{',
+        r'\.execute\s*\(\s*["\'].*#\{',
+        r'\.select_all\s*\(\s*["\'].*#\{',
+        
+        # C# Entity Framework
+        r'FromSqlRaw\s*\(\s*\$"',
+        r'ExecuteSqlRaw\s*\(\s*\$"',
+        r'SqlQuery\s*\(\s*\$"',
+        r'ExecuteSqlCommand\s*\(\s*\$"',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".js", ".ts", ".py", ".cs", ".rb"],
+    false_positive_patterns=[
+        r'\?\s*[,\)]',                # Positional placeholders
+        r'\$\d+',                     # PostgreSQL positional params
+        r':\w+',                      # Named parameters
+        r'@\w+',                      # SQL Server parameters
+        r'bindparams',
+        r'\.bind\s*\(',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SQL Injection - PHP MySQL",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # Superglobal injection
+        r'["\']SELECT\s+.+\$_(GET|POST|REQUEST|COOKIE|SERVER)',
+        r'["\']INSERT\s+.+\$_(GET|POST|REQUEST|COOKIE)',
+        r'["\']UPDATE\s+.+\$_(GET|POST|REQUEST|COOKIE)',
+        r'["\']DELETE\s+.+\$_(GET|POST|REQUEST|COOKIE)',
+        r'["\'].*WHERE\s+.+\$_(GET|POST|REQUEST|COOKIE)',
+        
+        # Variable concatenation
+        r'["\']SELECT\s+.+["\']\s*\.\s*\$(?!pdo)',
+        r'["\'].*WHERE\s+.+["\']\s*\.\s*\$(?!pdo)',
+        
+        # Deprecated mysql_* functions (always flag)
+        r'mysql_query\s*\(',
+        r'mysql_db_query\s*\(',
+        r'mysql_unbuffered_query\s*\(',
+        
+        # mysqli without prepared statements
+        r'mysqli_query\s*\(\s*\$\w+,\s*["\'].*\$(?!stmt)',
+        r'mysqli_multi_query\s*\(\s*\$\w+,\s*["\'].*\$',
+        
+        # PDO without prepared statements
+        r'\$pdo->query\s*\(\s*["\'].*\$',
+        r'\$\w+->query\s*\(\s*["\'].*\.\s*\$',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".php"],
+    false_positive_patterns=[
+        r'->prepare\s*\(',
+        r'bindParam',
+        r'bindValue',
+        r'execute\s*\(\s*\[',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SQL Injection - Java JDBC",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # Statement (not PreparedStatement)
+        r'createStatement\s*\(\s*\).*executeQuery\s*\(\s*["\'].*\+',
+        r'createStatement\s*\(\s*\).*executeUpdate\s*\(\s*["\'].*\+',
+        r'createStatement\s*\(\s*\).*execute\s*\(\s*["\'].*\+',
+        
+        # String building with SQL
+        r'StringBuilder.*append\s*\(\s*["\']SELECT',
+        r'StringBuffer.*append\s*\(\s*["\']SELECT',
+        r'String\.join.*SELECT',
+        
+        # Statement.execute with concatenation
+        r'statement\.execute\w*\s*\(\s*["\'].*\+',
+        r'stmt\.execute\w*\s*\(\s*["\'].*\+',
+        
+        # Spring JDBC without parameters
+        r'jdbcTemplate\.query\s*\(\s*["\'].*\+',
+        r'jdbcTemplate\.update\s*\(\s*["\'].*\+',
+        r'jdbcTemplate\.execute\s*\(\s*["\'].*\+',
+        r'namedParameterJdbcTemplate\.query\s*\(\s*["\'].*\+',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".java", ".kt"],
+    false_positive_patterns=[
+        r'PreparedStatement',
+        r'prepareStatement',
+        r'\?\s*[,\)]',
+        r'setString',
+        r'setInt',
+        r'setLong',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SQL Injection - Python Database APIs",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # Direct cursor execution with f-strings
+        r'cursor\.execute\s*\(\s*f["\']',
+        r'cur\.execute\s*\(\s*f["\']',
+        r'\.execute\s*\(\s*f["\']SELECT',
+        r'\.execute\s*\(\s*f["\'].*WHERE',
+        
+        # String formatting in execute
+        r'\.execute\s*\(\s*["\'].*%s.*["\'].*%\s*\(',
+        r'\.execute\s*\(\s*["\'].*["\']\.format\s*\(',
+        r'\.executemany\s*\(\s*f["\']',
+        
+        # psycopg2 / mysql-connector specific
+        r'cursor\.execute\s*\(\s*["\'].*%\s*\(',
+        r'cursor\.execute\s*\(\s*["\'].*["\']\.format',
+        
+        # asyncpg
+        r'connection\.fetch\s*\(\s*f["\']',
+        r'connection\.execute\s*\(\s*f["\']',
+        r'pool\.fetch\s*\(\s*f["\']',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".py"],
+    false_positive_patterns=[
+        r'execute\s*\(\s*["\'][^"\']*["\'],\s*[\[\(]',   # Parameterized query
+        r'execute\s*\(\s*["\'][^"\']*["\'],\s*\{',       # Dict params
+        r'%\(\w+\)s',                                      # Named params
+        r'mogrify',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SQL Injection - Go Database/SQL",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # fmt.Sprintf with SQL
+        r'db\.Query\s*\(\s*fmt\.Sprintf\s*\(',
+        r'db\.QueryRow\s*\(\s*fmt\.Sprintf\s*\(',
+        r'db\.Exec\s*\(\s*fmt\.Sprintf\s*\(',
+        r'tx\.Query\s*\(\s*fmt\.Sprintf\s*\(',
+        r'tx\.Exec\s*\(\s*fmt\.Sprintf\s*\(',
+        
+        # String concatenation
+        r'db\.Query\s*\(\s*["`].*\+',
+        r'db\.Exec\s*\(\s*["`].*\+',
+        
+        # GORM raw queries
+        r'\.Raw\s*\(\s*fmt\.Sprintf',
+        r'\.Exec\s*\(\s*fmt\.Sprintf',
+        
+        # sqlx
+        r'sqlx\.Get\s*\(.*fmt\.Sprintf',
+        r'sqlx\.Select\s*\(.*fmt\.Sprintf',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".go"],
+    false_positive_patterns=[
+        r'\$\d+',                      # PostgreSQL params
+        r'\?\s*[,\)]',                 # MySQL params
+        r'\.Rebind\s*\(',              # sqlx rebind
+    ],
+),
+
+# =========================================================================
+# C# SPECIFIC SQL INJECTION
+# =========================================================================
+
+VulnerabilityPattern(
+    name="SQL Injection - C# ADO.NET",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # SqlCommand with interpolation/concatenation
+        r'new\s+SqlCommand\s*\(\s*\$"',
+        r'new\s+SqlCommand\s*\(\s*["\'].*\+',
+        r'SqlCommand\s*\(\s*\$"',
+        r'CommandText\s*=\s*\$"',
+        r'CommandText\s*=\s*["\'].*\+',
+        
+        # OleDb/Odbc
+        r'new\s+OleDbCommand\s*\(\s*\$"',
+        r'new\s+OdbcCommand\s*\(\s*\$"',
+        
+        # SqlDataAdapter
+        r'new\s+SqlDataAdapter\s*\(\s*\$"',
+        r'new\s+SqlDataAdapter\s*\(\s*["\'].*\+',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".cs"],
+    false_positive_patterns=[
+        r'@\w+',                       # SQL Server parameters
+        r'Parameters\.Add',
+        r'Parameters\.AddWithValue',
+        r'\.Parameters\[',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SQL Injection - C# Entity Framework",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # Raw SQL methods with interpolation
+        r'\.FromSqlRaw\s*\(\s*\$"',
+        r'\.FromSqlRaw\s*\(\s*["\'].*\+',
+        r'\.ExecuteSqlRaw\s*\(\s*\$"',
+        r'\.ExecuteSqlRaw\s*\(\s*["\'].*\+',
+        r'\.SqlQuery\s*\(\s*\$"',
+        r'Database\.ExecuteSqlCommand\s*\(\s*\$"',
+        
+        # EF Core interpolated (safer but flag for review)
+        r'\.FromSqlInterpolated\s*\(\s*\$".*\+',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".cs"],
+    false_positive_patterns=[
+        r'FromSqlInterpolated',        # EF Core handles this safely
+        r'@\w+',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SQL Injection - C# Dapper",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        r'\.Query\s*(<.*>)?\s*\(\s*\$"',
+        r'\.Query\s*(<.*>)?\s*\(\s*["\'].*\+',
+        r'\.Execute\s*\(\s*\$"',
+        r'\.Execute\s*\(\s*["\'].*\+',
+        r'\.QueryFirst\w*\s*(<.*>)?\s*\(\s*\$"',
+        r'\.QuerySingle\w*\s*(<.*>)?\s*\(\s*\$"',
+        r'\.QueryMultiple\s*\(\s*\$"',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".cs"],
+    false_positive_patterns=[
+        r'@\w+',
+        r',\s*new\s*\{',               # Anonymous object params
+    ],
+),
+
+# =========================================================================
+# SECOND-ORDER & STORED SQL INJECTION
+# =========================================================================
+
+VulnerabilityPattern(
+    name="SQL Injection - Stored/Second-Order",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # Building queries from database values
+        r'\.execute\s*\(\s*row\[',
+        r'\.execute\s*\(\s*result\[',
+        r'\.execute\s*\(\s*record\.',
+        r'executeQuery\s*\(\s*rs\.getString',
+        r'executeQuery\s*\(\s*resultSet\.get',
+        
+        # Using session/cookie data in queries
+        r'["\']SELECT.*session\[',
+        r'["\']SELECT.*Session\[',
+        r'["\']SELECT.*cookie',
+    ],
+    severity=Severity.HIGH,
+    languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go"],
+),
+
+# =========================================================================
+# POSTGRESQL SPECIFIC INJECTION
+# =========================================================================
+
+VulnerabilityPattern(
+    name="PostgreSQL Injection - Dangerous Functions",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # File system access
+        r'pg_read_file\s*\(',
+        r'pg_read_binary_file\s*\(',
+        r'pg_ls_dir\s*\(',
+        r'pg_stat_file\s*\(',
+        
+        # Large object operations
+        r'lo_import\s*\(',
+        r'lo_export\s*\(',
+        
+        # COPY command with variables
+        r'COPY\s+.+\s+FROM\s+.+[\$\{#]',
+        r'COPY\s+.+\s+TO\s+.+[\$\{#]',
+        
+        # Code execution
+        r'CREATE\s+FUNCTION.*LANGUAGE\s+(plpython|plperl|pltcl)',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go"],
+),
+
+# =========================================================================
+# ORM-SPECIFIC UNSAFE PATTERNS
+# =========================================================================
+
+VulnerabilityPattern(
+    name="SQL Injection - ORM Bypass/Unsafe Methods",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # Django
+        r'\.extra\s*\(\s*where\s*=\s*\[.*%',
+        r'\.extra\s*\(\s*select\s*=\s*\{.*%',
+        r'RawSQL\s*\(',
+        
+        # SQLAlchemy
+        r'text\s*\(\s*["\'].*%',
+        r'text\s*\(\s*f["\']',
+        r'literal_column\s*\(\s*f["\']',
+        
+        # Sequelize
+        r'sequelize\.literal\s*\(\s*["\'].*\+',
+        r'sequelize\.literal\s*\(\s*`.*\$\{',
+        r'Sequelize\.literal\s*\(\s*["\'].*\+',
+        
+        # ActiveRecord
+        r'\.where\s*\(\s*["\'].*#\{',
+        r'\.order\s*\(\s*["\'].*#\{',
+        r'\.pluck\s*\(\s*["\'].*#\{',
+        r'\.group\s*\(\s*["\'].*#\{',
+        
+        # Hibernate HQL
+        r'createQuery\s*\(\s*["\'].*\+',
+        r'createNativeQuery\s*\(\s*["\'].*\+',
+    ],
+    severity=Severity.HIGH,
+    languages=[".py", ".js", ".ts", ".rb", ".java", ".kt"],
+    false_positive_patterns=[
+        r':\w+',                       # Named parameters
+        r'\?\s*[,\)]',
+    ],
+),
     # =========================================================================
     # NOSQL INJECTION PATTERNS
     # =========================================================================
 
     VulnerabilityPattern(
-        name="NoSQL Injection - MongoDB Query Operators",
-        category=VulnCategory.NOSQL_INJECTION,
-        patterns=[
-            r'\.find\s*\(\s*\{[^}]*req\.(body|query|params)\[',
-            r'\.findOne\s*\(\s*\{[^}]*req\.(body|query|params)\[',
-            r'\.findOneAndUpdate\s*\(\s*\{[^}]*req\.(body|query|params)\[',
-            r'\.updateOne\s*\(\s*\{[^}]*req\.(body|query|params)\[',
-            r'\.deleteOne\s*\(\s*\{[^}]*req\.(body|query|params)\[',
-            r'\.aggregate\s*\(\s*\[.*req\.(body|query|params)\[',
-            r'\.find\s*\(\s*req\.(body|query)\s*\)',
-            r'\.findOne\s*\(\s*req\.(body|query)\s*\)',
-        ],
-        severity=Severity.HIGH,
-        languages=[".js", ".ts", ".jsx", ".tsx"],
-        false_positive_patterns=[r'findById', r'\.id\)$', r'params\.id\)'],
-    ),
-    VulnerabilityPattern(
-        name="NoSQL Injection - MongoDB $where Operator",
-        category=VulnCategory.NOSQL_INJECTION,
-        patterns=[
-            r'\$where\s*:',
-            r'"\$where"\s*:',
-            r"'\$where'\s*:",
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".js", ".ts", ".jsx", ".tsx", ".py", ".php", ".java", ".rb", ".cs"],
-    ),
-    VulnerabilityPattern(
-        name="NoSQL Injection - Direct Object Spread",
-        category=VulnCategory.NOSQL_INJECTION,
-        patterns=[
-            r'\.find\s*\(\s*\{\s*\.\.\.req\.',
-            r'\.findOne\s*\(\s*\{\s*\.\.\.req\.',
-            r'\.update\w*\s*\(\s*\{\s*\.\.\.req\.',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".js", ".ts", ".jsx", ".tsx"],
-    ),
+    name="NoSQL Injection - Tainted Input in Query",
+    category=VulnCategory.NOSQL_INJECTION,
+    patterns=[
+        # Catches: .find({ user: req.query.name }), .findOne({ email: req.body.email })
+        r'\.(find|findOne|update|delete|aggregate|count|distinct|findOneAnd(?:Update|Delete|Replace))\w*\s*\(\s*\{[^}]*:\s*req\.(body|query|params)',
+        
+        # Catches: .find(req.body), .findOne(req.query) - passing raw user input as query
+        r'\.(find|findOne|countDocuments|aggregate|distinct)\s*\(\s*req\.(body|query)\s*\)',
+        
+        # Catches: .find({ ...req.body }) - object spread of user input
+        r'\.(find|findOne|update|delete|aggregate|findOneAnd)\w*\s*\(\s*\{\s*\.\.\.req\.(body|query|params)',
+        
+        # Catches: $where with string concatenation or template literals
+        r'\$where\s*:\s*[`"\'].*(\+|\$\{|req\.)',
+        
+        # Catches: collection[method](userInput) dynamic method calls
+        r'collection\s*\[\s*req\.(body|query|params)',
+        
+        # Catches: MongoDB operators from user input: { $gt: req.body.value }
+        r'\{\s*\$(?:gt|gte|lt|lte|ne|in|nin|or|and|not|regex|where|expr)\s*:\s*req\.(body|query|params)',
+        
+        # Catches: eval-like patterns in Mongoose/MongoDB
+        r'\.(?:mapReduce|group)\s*\(\s*[^)]*req\.(body|query|params)',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".js", ".ts", ".jsx", ".tsx"],
+    false_positive_patterns=[
+        r'findById',                    # Mongoose casts to ObjectId
+        r'params\.id\s*\)',             # Single ID lookups are generally safe
+        r'Types\.ObjectId\s*\(',        # Explicit ObjectId casting
+        r'mongoose\.Types\.ObjectId',   # Explicit ObjectId casting
+        r'new\s+ObjectId\s*\(',         # Explicit ObjectId casting
+        r'sanitize',                    # Likely using sanitization
+        r'escape',                      # Likely using escaping
+        r'validator\.',                 # Using validator library
+    ],
+),
+VulnerabilityPattern(
+    name="NoSQL Injection - MongoDB $where Operator",
+    category=VulnCategory.NOSQL_INJECTION,
+    patterns=[
+        r'\$where\s*:',
+        r'"\$where"\s*:',
+        r"'\$where'\s*:",
+    ],
+    severity=Severity.HIGH,  # Changed from CRITICAL - $where alone is a code smell, not always exploitable
+    languages=[".js", ".ts", ".jsx", ".tsx", ".py", ".php", ".java", ".rb", ".cs"],
+    false_positive_patterns=[
+        r'\$where\s*:\s*function\s*\(\)\s*\{\s*return\s+(true|false)',  # Static $where
+        r'\$where\s*:\s*["\'][^"\']*["\']',  # Hardcoded string (still risky but not injection)
+    ],
+),
 
     # =========================================================================
     # XPATH INJECTION PATTERNS
@@ -1287,19 +1631,64 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
     VulnerabilityPattern(
         name="Auth Bypass - Hardcoded Credentials",
         category=VulnCategory.AUTH_BYPASS,
-        patterns=[
-            r'password\s*[=:]\s*["\'][^"\']{4,}["\']',
-            r'passwd\s*[=:]\s*["\'][^"\']{4,}["\']',
-            r'pwd\s*[=:]\s*["\'][^"\']{4,}["\']',
-            r'secret\s*[=:]\s*["\'][^"\']{8,}["\']',
-            r'api[_-]?key\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
-            r'apikey\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
-            r'auth[_-]?token\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
-            r'access[_-]?token\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
-            r'private[_-]?key\s*[=:]\s*["\']',
-            r'connectionString\s*[=:]\s*["\'].*Password',
-            r'ConnectionString\s*=\s*["\'].*Password',
-        ],
+        patterns = [
+    # Original patterns
+    r'password\s*[=:]\s*["\'][^"\']{4,}["\']',
+    r'passwd\s*[=:]\s*["\'][^"\']{4,}["\']',
+    r'pwd\s*[=:]\s*["\'][^"\']{4,}["\']',
+    r'secret\s*[=:]\s*["\'][^"\']{8,}["\']',
+    r'api[_-]?key\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
+    r'apikey\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
+    r'auth[_-]?token\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
+    r'access[_-]?token\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
+    r'private[_-]?key\s*[=:]\s*["\']',
+    r'connectionString\s*[=:]\s*["\'].*Password',
+    r'ConnectionString\s*=\s*["\'].*Password',
+    
+    # 1. AWS Keys
+    r'AKIA[0-9A-Z]{16}',  # AWS Access Key ID
+    r'aws[_-]?secret[_-]?access[_-]?key\s*[=:]\s*["\'][A-Za-z0-9/+=]{40}["\']',
+    r'AWS_SECRET_ACCESS_KEY\s*[=:]\s*["\'][A-Za-z0-9/+=]{40}["\']',
+    
+    # 2. Database Connection Strings
+    r'mongodb(\+srv)?://[^\s"\']+:[^\s"\']+@[^\s"\']+',  # MongoDB URI with creds
+    r'postgres(ql)?://[^\s"\']+:[^\s"\']+@[^\s"\']+',    # PostgreSQL URI with creds
+    r'mysql://[^\s"\']+:[^\s"\']+@[^\s"\']+',            # MySQL URI with creds
+    r'redis://[^\s"\']+:[^\s"\']+@[^\s"\']+',            # Redis URI with creds
+    
+    # 3. Payment & SaaS API Keys
+    r'sk_live_[a-zA-Z0-9]{24,}',           # Stripe live secret key
+    r'sk_test_[a-zA-Z0-9]{24,}',           # Stripe test secret key
+    r'rk_live_[a-zA-Z0-9]{24,}',           # Stripe restricted key
+    r'https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[a-zA-Z0-9]+',  # Slack webhook
+    r'xox[baprs]-[0-9a-zA-Z-]+',           # Slack tokens
+    
+    # 4. Session/App Secrets (generic high-entropy strings)
+    r'SESSION_SECRET\s*[=:]\s*["\'][^"\']{16,}["\']',
+    r'APP_SECRET\s*[=:]\s*["\'][^"\']{16,}["\']',
+    r'JWT_SECRET\s*[=:]\s*["\'][^"\']{16,}["\']',
+    
+    # 5. Common variable names with values
+    r'admin[_-]?password\s*[=:]\s*["\'][^"\']{4,}["\']',
+    r'api[_-]?token\s*[=:]\s*["\'][^"\']{16,}["\']',
+    r'bearer[_-]?token\s*[=:]\s*["\'][^"\']{16,}["\']',
+    
+    # 6. SSH/PGP Private Keys
+    r'-----BEGIN\s+(RSA|DSA|EC|OPENSSH|PGP)\s+PRIVATE\s+KEY-----',
+    r'-----BEGIN\s+PRIVATE\s+KEY-----',
+    
+    # 7. Basic Auth Headers
+    r'Basic\s+[A-Za-z0-9+/=]{10,}',        # Base64 encoded Basic auth
+    r'Bearer\s+[A-Za-z0-9._-]{20,}',       # Bearer tokens
+    
+    # 8. Additional cloud providers
+    r'AZURE[_-]?(?:CLIENT|TENANT|SUBSCRIPTION)[_-]?(?:ID|SECRET)\s*[=:]\s*["\'][^"\']+["\']',
+    r'GOOGLE[_-]?(?:API[_-]?KEY|CLIENT[_-]?SECRET)\s*[=:]\s*["\'][^"\']+["\']',
+    r'gh[pousr]_[A-Za-z0-9_]{36,}',        # GitHub tokens
+    
+    # 9. JWT tokens (full format)
+    r'eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*',
+],
         severity=Severity.HIGH,
         languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go", ".kt", ".env", ".config", ".json", ".yaml", ".yml"],
         false_positive_patterns=[r'process\.env', r'os\.environ', r'getenv', r'password\s*[=:]\s*["\']["\']', r'<PASSWORD>', r'\$\{', r'Environment\.GetEnvironmentVariable', r'Configuration\['],
@@ -1338,124 +1727,861 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
     # =========================================================================
 
     VulnerabilityPattern(
-        name="SSTI - Jinja2/Flask (Python)",
-        category=VulnCategory.SSTI,
-        patterns=[
-            r'render_template_string\s*\(\s*.*req',
-            r'render_template_string\s*\(\s*.*request\.',
-            r'render_template_string\s*\(\s*f["\']',
-            r'render_template_string\s*\(\s*["\'].*%',
-            r'Template\s*\(\s*.*request\.',
-            r'from_string\s*\(\s*.*request\.',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".py"],
-    ),
-    VulnerabilityPattern(
-        name="SSTI - Pug/Jade/EJS (Node.js)",
-        category=VulnCategory.SSTI,
-        patterns=[
-            r'pug\.compile\s*\(\s*.*req\.',
-            r'pug\.render\s*\(\s*.*req\.',
-            r'ejs\.render\s*\(\s*.*req\.',
-            r'ejs\.compile\s*\(\s*.*req\.',
-            r'Handlebars\.compile\s*\(\s*.*req\.',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".js", ".ts"],
-    ),
-    VulnerabilityPattern(
-        name="SSTI - Razor (C#)",
-        category=VulnCategory.SSTI,
-        patterns=[
-            r'RazorEngine.*Compile\s*\(',
-            r'Engine\.Razor\.RunCompile\s*\(',
-            r'RazorEngineService.*RunCompile\s*\(',
-            r'RazorTemplateEngine.*GenerateCode\s*\(',
-        ],
-        severity=Severity.HIGH,
-        languages=[".cs"],
-    ),
-    VulnerabilityPattern(
-        name="SSTI - Twig/Smarty (PHP)",
-        category=VulnCategory.SSTI,
-        patterns=[
-            r'->createTemplate\s*\(\s*\$_(GET|POST|REQUEST)',
-            r'->createTemplate\s*\(\s*\$',
-            r'\{php\}',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".php", ".tpl"],
-    ),
+    name="SSTI - Jinja2/Flask/Mako (Python)",
+    category=VulnCategory.SSTI,
+    patterns=[
+        # render_template_string with user input
+        r'render_template_string\s*\(\s*request\.(form|args|json|data|values|get_json)',
+        r'render_template_string\s*\(\s*f["\']',
+        r'render_template_string\s*\(\s*["\'].*%\s*\(',
+        r'render_template_string\s*\(\s*["\'].*\.format\s*\(',
+        r'render_template_string\s*\(\s*["\'].*\+',
+        r'render_template_string\s*\(\s*\w+\s*\)',  # Variable input
+        r'render_template_string\s*\(\s*str\s*\(',
+        
+        # Jinja2 Environment/Template direct
+        r'Template\s*\(\s*request\.(form|args|json|data)',
+        r'Template\s*\(\s*f["\']',
+        r'Template\s*\(\s*["\'].*%\s*\(',
+        r'Template\s*\(\s*["\'].*\.format\s*\(',
+        r'Template\s*\(\s*["\'].*\+',
+        r'jinja2\.Template\s*\(\s*request\.',
+        r'jinja2\.Template\s*\(\s*f["\']',
+        
+        # Environment.from_string
+        r'\.from_string\s*\(\s*request\.',
+        r'\.from_string\s*\(\s*f["\']',
+        r'\.from_string\s*\(\s*["\'].*%',
+        r'\.from_string\s*\(\s*["\'].*\+',
+        r'env\.from_string\s*\(\s*.*request\.',
+        r'Environment\s*\([^)]*\)\.from_string\s*\(',
+        r'get_template_attribute.*from_string',
+        
+        # Mako templates
+        r'mako\.template\.Template\s*\(\s*request\.',
+        r'mako\.template\.Template\s*\(\s*f["\']',
+        r'MakoTemplate\s*\(\s*request\.',
+        r'Template\s*\(\s*text\s*=\s*request\.',
+        r'Template\s*\(\s*text\s*=\s*f["\']',
+        r'mako\.lookup\.TemplateLookup.*get_template\s*\(\s*request\.',
+        
+        # Tornado templates
+        r'tornado\.template\.Template\s*\(\s*request\.',
+        r'tornado\.template\.Template\s*\(\s*self\.get_argument',
+        r'template\.Template\s*\(\s*self\.get_argument',
+        r'\.generate\s*\(\s*\*\*.*request\.',
+        
+        # Django (unsafe patterns)
+        r'django\.template\.Template\s*\(\s*request\.(GET|POST|body)',
+        r'Engine\s*\([^)]*\)\.from_string\s*\(\s*request\.',
+        r'engines\[["\']django["\']\]\.from_string\s*\(\s*request\.',
+        r'Template\s*\(\s*request\.(GET|POST|body)',
+        
+        # Chameleon
+        r'chameleon\.PageTemplate\s*\(\s*request\.',
+        r'PageTemplate\s*\(\s*request\.',
+        
+        # Genshi
+        r'genshi\.template\.MarkupTemplate\s*\(\s*request\.',
+        r'MarkupTemplate\s*\(\s*request\.',
+        r'TextTemplate\s*\(\s*request\.',
+        
+        # String formatting passed to render
+        r'\.render\s*\(\s*\{[^}]*:\s*request\.(form|args|json)',
+        r'\.render\s*\(\s*\*\*request\.(form|json)',
+        r'\.render_string\s*\(\s*request\.',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".py"],
+    false_positive_patterns=[
+        r'render_template\s*\(\s*["\'][^"\']+\.(html|jinja|j2)',
+        r'escape\s*\(',
+        r'Markup\s*\(',
+        r'markupsafe\.',
+        r'autoescape\s*=\s*True',
+        r'\.txt["\']',
+        r'select_autoescape',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SSTI - EJS/Pug/Jade/Nunjucks/Handlebars (Node.js)",
+    category=VulnCategory.SSTI,
+    patterns=[
+        # EJS
+        r'ejs\.render\s*\(\s*req\.(body|query|params)',
+        r'ejs\.render\s*\(\s*`[^`]*\$\{',
+        r'ejs\.render\s*\(\s*["\'].*\+',
+        r'ejs\.render\s*\(\s*\w+\s*,',  # Variable as template
+        r'ejs\.compile\s*\(\s*req\.',
+        r'ejs\.compile\s*\(\s*`[^`]*\$\{',
+        r'ejs\.renderFile\s*\(\s*req\.(body|query|params)',
+        r'res\.render\s*\(\s*req\.(body|query|params)',  # Express with user-controlled view
+        
+        # Pug/Jade
+        r'pug\.compile\s*\(\s*req\.(body|query|params)',
+        r'pug\.compile\s*\(\s*`[^`]*\$\{',
+        r'pug\.render\s*\(\s*req\.(body|query|params)',
+        r'pug\.render\s*\(\s*`[^`]*\$\{',
+        r'pug\.render\s*\(\s*["\'].*\+',
+        r'pug\.renderFile\s*\(\s*req\.',
+        r'jade\.compile\s*\(\s*req\.',
+        r'jade\.render\s*\(\s*req\.',
+        r'jade\.renderFile\s*\(\s*req\.',
+        
+        # Nunjucks
+        r'nunjucks\.renderString\s*\(\s*req\.',
+        r'nunjucks\.renderString\s*\(\s*`[^`]*\$\{',
+        r'nunjucks\.renderString\s*\(\s*["\'].*\+',
+        r'nunjucks\.compile\s*\(\s*req\.',
+        r'env\.renderString\s*\(\s*req\.',
+        r'nunjucks\.Environment.*renderString\s*\(\s*req\.',
+        r'\.addGlobal\s*\([^)]*req\.(body|query|params)',
+        
+        # Handlebars
+        r'Handlebars\.compile\s*\(\s*req\.',
+        r'Handlebars\.compile\s*\(\s*`[^`]*\$\{',
+        r'Handlebars\.compile\s*\(\s*["\'].*\+',
+        r'handlebars\.compile\s*\(\s*req\.',
+        r'hbs\.compile\s*\(\s*req\.',
+        r'Handlebars\.precompile\s*\(\s*req\.',
+        r'Handlebars\.registerHelper.*req\.(body|query|params)',
+        r'Handlebars\.SafeString\s*\(\s*req\.',  # Bypasses escaping
+        
+        # Mustache
+        r'Mustache\.render\s*\(\s*req\.',
+        r'Mustache\.render\s*\(\s*`[^`]*\$\{',
+        r'mustache\.render\s*\(\s*req\.',
+        r'Mustache\.parse\s*\(\s*req\.',
+        
+        # Lodash/Underscore template
+        r'_\.template\s*\(\s*req\.',
+        r'_\.template\s*\(\s*`[^`]*\$\{',
+        r'_\.template\s*\(\s*["\'].*\+',
+        r'lodash\.template\s*\(\s*req\.',
+        r'underscore\.template\s*\(\s*req\.',
+        
+        # doT.js
+        r'doT\.template\s*\(\s*req\.',
+        r'doT\.compile\s*\(\s*req\.',
+        r'dot\.template\s*\(\s*req\.',
+        
+        # Marko
+        r'marko\.load\s*\(\s*req\.',
+        r'\.renderToString\s*\(\s*\{[^}]*:\s*req\.',
+        
+        # Swig (deprecated but still used)
+        r'swig\.render\s*\(\s*req\.',
+        r'swig\.compile\s*\(\s*req\.',
+        r'swig\.renderFile\s*\(\s*req\.',
+        
+        # Dust.js
+        r'dust\.render\s*\(\s*req\.',
+        r'dust\.compile\s*\(\s*req\.',
+        r'dust\.renderSource\s*\(\s*req\.',
+        
+        # Eta
+        r'eta\.render\s*\(\s*req\.',
+        r'eta\.renderString\s*\(\s*req\.',
+        r'Eta\s*\(\s*\)\.renderString\s*\(\s*req\.',
+        
+        # Squirrelly
+        r'Sqrl\.render\s*\(\s*req\.',
+        r'squirrelly\.render\s*\(\s*req\.',
+        
+        # Generic patterns
+        r'\.compile\s*\(\s*req\.(body|query|params)',
+        r'\.render\s*\(\s*req\.(body|query|params)\s*[,\)]',
+        r'template\s*\(\s*req\.(body|query|params)',
+        r'eval\s*\(\s*["\'].*req\.(body|query|params)',  # eval in template context
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".js", ".ts", ".jsx", ".tsx", ".mjs"],
+    false_positive_patterns=[
+        r'\.render\s*\(\s*["\'][^"\']+\.(html|ejs|pug|hbs|njk)',
+        r'escape\s*\(',
+        r'escapeHtml\s*\(',
+        r'sanitize',
+        r'encodeURIComponent',
+        r'validator\.',
+        r'xss\s*\(',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SSTI - Razor/Scriban/Fluid/DotLiquid (C#)",
+    category=VulnCategory.SSTI,
+    patterns=[
+        # RazorEngine
+        r'RazorEngine.*\.Compile\s*\(\s*.*Request\.',
+        r'RazorEngine.*\.Compile\s*\(\s*\$"',
+        r'RazorEngine.*\.Compile\s*\(\s*["\'].*\+',
+        r'Engine\.Razor\.RunCompile\s*\(\s*.*Request\.',
+        r'Engine\.Razor\.RunCompile\s*\(\s*\$"',
+        r'RazorEngineService.*\.RunCompile\s*\(',
+        r'RazorEngineService.*\.Compile\s*\(',
+        r'\.CompileRenderString\s*\(\s*.*Request\.',
+        r'RazorTemplateEngine.*\.GenerateCode\s*\(',
+        r'RazorLightEngine.*\.CompileRenderStringAsync\s*\(',
+        
+        # Scriban
+        r'Scriban\.Template\.Parse\s*\(\s*.*Request\.',
+        r'Scriban\.Template\.Parse\s*\(\s*\$"',
+        r'Template\.Parse\s*\(\s*.*Request\.(Query|Form)',
+        r'Template\.Parse\s*\(\s*\$"',
+        r'Template\.ParseLiquid\s*\(\s*.*Request\.',
+        r'\.Render\s*\(\s*.*Request\.(Query|Form)',
+        
+        # Fluid (Liquid for .NET)
+        r'FluidTemplate\.Parse\s*\(\s*.*Request\.',
+        r'FluidParser\s*\(\s*\)\.Parse\s*\(\s*.*Request\.',
+        r'_fluidParser\.Parse\s*\(\s*.*Request\.',
+        r'IFluidTemplate.*Parse\s*\(\s*.*Request\.',
+        
+        # DotLiquid
+        r'DotLiquid\.Template\.Parse\s*\(\s*.*Request\.',
+        r'DotLiquid\.Template\.Parse\s*\(\s*\$"',
+        r'Template\.Parse\s*\(\s*.*Request\.(Query|Form|Body)',
+        r'\.RegisterSafeType.*Request\.',  # Registering request as safe
+        
+        # Handlebars.NET
+        r'Handlebars\.Compile\s*\(\s*.*Request\.',
+        r'Handlebars\.Compile\s*\(\s*\$"',
+        r'handlebarsInstance\.Compile\s*\(\s*.*Request\.',
+        r'HandlebarsTemplate.*Compile\s*\(\s*.*Request\.',
+        
+        # Stubble (Mustache for .NET)
+        r'StubbleBuilder.*Render\s*\(\s*.*Request\.',
+        r'stubble\.Render\s*\(\s*.*Request\.',
+        
+        # Nustache
+        r'Nustache\.Core\.Render\.StringToString\s*\(\s*.*Request\.',
+        
+        # ASPX (code expressions)
+        r'<%=\s*Request\.',
+        r'<%=\s*Request\[("|\')',
+        r'<%:\s*Request\.',
+        r'Response\.Write\s*\(\s*Request\.',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".cs", ".cshtml", ".vb", ".aspx", ".ascx"],
+    false_positive_patterns=[
+        r'\.Parse\s*\(\s*["\'][^"\']*["\']',  # Static template string
+        r'HtmlEncode',
+        r'AntiXss',
+        r'HttpUtility\.HtmlEncode',
+        r'WebUtility\.HtmlEncode',
+        r'Server\.HtmlEncode',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SSTI - Twig/Blade/Smarty/Latte (PHP)",
+    category=VulnCategory.SSTI,
+    patterns=[
+        # Twig
+        r'->createTemplate\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)',
+        r'->createTemplate\s*\(\s*\$[a-zA-Z_]\w*\s*\)',
+        r'Twig\\Environment.*->createTemplate\s*\(\s*\$',
+        r'Twig_Environment.*->createTemplate\s*\(\s*\$',
+        r'\$twig->render\s*\(\s*\$_(GET|POST|REQUEST)',
+        r'->render\s*\(\s*\$_(GET|POST|REQUEST)',
+        r'Environment\s*\([^)]*\)->render\s*\(\s*\$',
+        r'->loadTemplate\s*\(\s*\$_(GET|POST|REQUEST)',
+        r'Twig\\Loader\\ArrayLoader\s*\(\s*\[.*\$_(GET|POST)',
+        
+        # Blade (Laravel)
+        r'Blade::compileString\s*\(\s*\$',
+        r'Blade::render\s*\(\s*\$',
+        r'\\Illuminate\\View\\Compilers\\BladeCompiler.*compile\s*\(\s*\$',
+        r'view\s*\(\s*\$_(GET|POST|REQUEST)',
+        r'View::make\s*\(\s*\$_(GET|POST|REQUEST)',
+        r'@php.*\$_(GET|POST|REQUEST)',
+        r'\{!!\s*\$_(GET|POST|REQUEST)',  # Unescaped Blade output
+        
+        # Smarty
+        r'\{php\}',  # Dangerous Smarty tag
+        r'\{/php\}',
+        r'->fetch\s*\(\s*["\']string:.*\$_(GET|POST|REQUEST)',
+        r'Smarty.*->fetch\s*\(\s*\$',
+        r'->display\s*\(\s*["\']string:.*\$',
+        r'->assign\s*\(\s*["\'].*["\']\s*,\s*\$_(GET|POST|REQUEST)',
+        r'smarty_modifier_',  # Custom modifiers
+        r'\{eval\s+var=',  # Smarty eval
+        r'\{include\s+file=.*\$',
+        r'->registerPlugin.*eval',
+        r'->setTemplateDir\s*\(\s*\$_(GET|POST)',
+        
+        # Latte
+        r'Latte\\Engine.*render\s*\(\s*\$',
+        r'Latte\\Engine.*renderToString\s*\(\s*\$',
+        r'->renderToString\s*\(\s*\$_(GET|POST)',
+        r'\$latte->render\s*\(\s*\$_(GET|POST)',
+        r'createTemplate\s*\(\s*\$_(GET|POST)',
+        
+        # Plates
+        r'->render\s*\(\s*\$_(GET|POST|REQUEST)',
+        r'League\\Plates.*render\s*\(\s*\$',
+        r'\$plates->render\s*\(\s*\$',
+        
+        # Mustache.php
+        r'Mustache_Engine.*render\s*\(\s*\$',
+        r'\$mustache->render\s*\(\s*\$_(GET|POST)',
+        r'->loadTemplate\s*\(\s*\$_(GET|POST)',
+        
+        # Volt (Phalcon)
+        r'Volt.*compile\s*\(\s*\$',
+        r'->render\s*\(\s*\$_(GET|POST)',
+        
+        # Generic PHP patterns
+        r'eval\s*\(\s*.*\$_(GET|POST|REQUEST|COOKIE)',
+        r'create_function\s*\(\s*.*\$_(GET|POST|REQUEST)',
+        r'preg_replace\s*\(\s*["\'].*\/e["\']',  # Deprecated /e modifier
+        r'assert\s*\(\s*.*\$_(GET|POST|REQUEST)',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".php", ".tpl", ".blade.php", ".twig", ".latte", ".phtml"],
+    false_positive_patterns=[
+        r'->render\s*\(\s*["\'][^"\']+\.twig',
+        r'->render\s*\(\s*["\'][^"\']+\.blade\.php',
+        r'escape\s*\(',
+        r'htmlspecialchars\s*\(',
+        r'htmlentities\s*\(',
+        r'\|e\s*\}',  # Twig escape filter
+        r'\|escape\s*\}',
+        r'e\s*\(\s*\$',  # Laravel e() helper
+        r'\{\{\s*\$',  # Escaped Blade output
+    ],
+),
+
+VulnerabilityPattern(
+    name="SSTI - Thymeleaf/Freemarker/Velocity/Pebble (Java)",
+    category=VulnCategory.SSTI,
+    patterns=[
+        # Thymeleaf
+        r'SpringTemplateEngine.*process\s*\(\s*.*getParameter',
+        r'TemplateEngine.*process\s*\(\s*.*request\.get',
+        r'TemplateEngine.*process\s*\(\s*.*\+',
+        r'ITemplateEngine.*process\s*\(\s*.*getParameter',
+        r'th:utext\s*=',  # Unescaped text
+        r'th:text\s*=\s*["\'].*\$\{.*getParameter',
+        r'\[\[.*\$\{.*request\.getParameter',
+        r'\[\(.*\$\{.*getParameter',  # Unescaped inline
+        r'data-th-utext',
+        r'StandardExpressionParser.*parseExpression\s*\(\s*.*getParameter',
+        
+        # Freemarker
+        r'Template.*process\s*\(\s*.*getParameter',
+        r'Configuration.*getTemplate\s*\(\s*.*getParameter',
+        r'Configuration.*getTemplate\s*\(\s*.*request\.get',
+        r'new\s+Template\s*\(\s*[^,]*,\s*new\s+StringReader\s*\(\s*.*request\.get',
+        r'freemarker\.template\.Template\s*\(\s*.*getParameter',
+        r'<#assign\s+.*=.*request\.getParameter',
+        r'\$\{.*request\.getParameter',
+        r'cfg\.setSharedVariable.*getParameter',
+        r'Environment.*setVariable.*getParameter',
+        
+        # Velocity
+        r'Velocity\.evaluate\s*\(\s*.*getParameter',
+        r'Velocity\.evaluate\s*\(\s*.*request\.get',
+        r'VelocityEngine.*evaluate\s*\(\s*.*request\.get',
+        r'VelocityEngine.*evaluate\s*\(\s*.*getParameter',
+        r'template\.merge\s*\(\s*.*getParameter',
+        r'\.mergeTemplate\s*\(\s*.*request\.get',
+        r'RuntimeInstance.*evaluate\s*\(',
+        r'VelocityContext.*put.*getParameter',
+        r'#set\s*\(\s*\$.*=.*getParameter',
+        r'#evaluate\s*\(',
+        r'#parse\s*\(\s*.*getParameter',
+        
+        # Pebble
+        r'PebbleEngine.*getTemplate\s*\(\s*.*getParameter',
+        r'PebbleEngine.*getLiteralTemplate\s*\(\s*.*getParameter',
+        r'pebbleEngine\.getLiteralTemplate\s*\(\s*.*request\.get',
+        r'\.evaluate\s*\(\s*.*getParameter',
+        
+        # Groovy Templates (GSP)
+        r'GroovyPagesTemplateEngine.*createTemplate\s*\(\s*.*getParameter',
+        r'SimpleTemplateEngine.*createTemplate\s*\(\s*.*getParameter',
+        r'GStringTemplateEngine.*createTemplate\s*\(\s*.*getParameter',
+        r'MarkupTemplateEngine.*createTemplate\s*\(\s*.*getParameter',
+        
+        # OGNL (Struts2) - very dangerous
+        r'%\{.*#.*\}',  # OGNL expression
+        r'OgnlUtil\.getValue\s*\(\s*.*getParameter',
+        r'OgnlUtil\.setValue\s*\(\s*.*getParameter',
+        r'Ognl\.getValue\s*\(\s*.*request\.get',
+        r'OgnlValueStack.*findValue\s*\(\s*.*getParameter',
+        r'ActionContext.*get\s*\(\s*.*getParameter',
+        
+        # SpEL (Spring Expression Language)
+        r'SpelExpressionParser.*parseExpression\s*\(\s*.*getParameter',
+        r'ExpressionParser.*parseExpression\s*\(\s*.*request\.get',
+        r'StandardEvaluationContext.*setValue.*getParameter',
+        r'SpelExpression.*getValue\s*\(\s*.*getParameter',
+        r'new\s+SpelExpressionParser\s*\(\s*\)\.parseExpression\s*\(\s*.*getParameter',
+        r'@Value\s*\(\s*["\']#\{.*getParameter',
+        
+        # MVEL
+        r'MVEL\.eval\s*\(\s*.*getParameter',
+        r'MVEL\.compileExpression\s*\(\s*.*getParameter',
+        r'MVELRuntime.*eval\s*\(\s*.*getParameter',
+        
+        # JEXL
+        r'JexlEngine.*createExpression\s*\(\s*.*getParameter',
+        r'JexlExpression.*evaluate\s*\(\s*.*getParameter',
+        r'jexl\.createScript\s*\(\s*.*getParameter',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".java", ".kt", ".groovy", ".gsp", ".ftl", ".vm"],
+    false_positive_patterns=[
+        r'\.process\s*\(\s*["\'][^"\']+\.html',
+        r'\.getTemplate\s*\(\s*["\'][^"\']+\.(ftl|vm|html)',
+        r'HtmlUtils\.htmlEscape',
+        r'StringEscapeUtils\.escapeHtml',
+        r'escapeHtml4',
+        r'ESAPI\.encoder',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SSTI - ERB/Slim/Haml/Liquid (Ruby)",
+    category=VulnCategory.SSTI,
+    patterns=[
+        # ERB
+        r'ERB\.new\s*\(\s*params\[',
+        r'ERB\.new\s*\(\s*request\.',
+        r'ERB\.new\s*\(\s*.*#\{.*params',
+        r'ERB\.new\s*\(\s*.*\+.*params',
+        r'Erubis::Eruby\.new\s*\(\s*params\[',
+        r'Erubis::Eruby\.new\s*\(\s*request\.',
+        r'\.result\s*\(\s*binding\s*\).*params',  # ERB result with binding
+        
+        # Slim
+        r'Slim::Template\.new\s*\(\s*params\[',
+        r'Slim::Template\.new\s*\(\s*request\.',
+        r'slim\s*\(\s*params\[',
+        r'Slim::Engine\.new\.render\s*\(\s*params\[',
+        
+        # Haml
+        r'Haml::Engine\.new\s*\(\s*params\[',
+        r'Haml::Engine\.new\s*\(\s*request\.',
+        r'haml\s*\(\s*params\[',
+        r'Haml::Template\.new\s*\(\s*params\[',
+        
+        # Liquid
+        r'Liquid::Template\.parse\s*\(\s*params\[',
+        r'Liquid::Template\.parse\s*\(\s*request\.',
+        r'\.parse\s*\(\s*params\[',
+        r'\.render\s*\(\s*.*params\[',
+        r'Liquid::Environment.*parse\s*\(\s*params\[',
+        
+        # Tilt (generic template interface)
+        r'Tilt\.new\s*\(\s*params\[',
+        r'Tilt\[["\'].*["\']\]\.new\s*\(\s*params\[',
+        
+        # ActionView render inline
+        r'render\s+inline:\s*params\[',
+        r'render\s+inline:\s*.*#\{.*params',
+        r'render\s+inline:\s*request\.',
+        r'render\s*\(\s*inline:\s*params\[',
+        
+        # Mustache
+        r'Mustache\.render\s*\(\s*params\[',
+        
+        # Generic Ruby interpolation in templates
+        r'eval\s*\(\s*params\[',
+        r'instance_eval\s*\(\s*params\[',
+        r'class_eval\s*\(\s*params\[',
+        r'send\s*\(\s*params\[',  # Dynamic method calls
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".rb", ".erb", ".haml", ".slim", ".rhtml"],
+    false_positive_patterns=[
+        r'ERB\.new\s*\(\s*File\.read',
+        r'render\s+template:',
+        r'render\s+partial:',
+        r'html_escape',
+        r'h\s*\(',
+        r'sanitize',
+        r'CGI\.escapeHTML',
+        r'ERB::Util\.html_escape',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SSTI - Go Templates",
+    category=VulnCategory.SSTI,
+    patterns=[
+        # html/template and text/template
+        r'template\.New\s*\([^)]*\)\.Parse\s*\(\s*r\.(URL|Form|PostForm|FormValue)',
+        r'template\.New\s*\([^)]*\)\.Parse\s*\(\s*.*r\.Form\.Get',
+        r'template\.Must\s*\(\s*.*\.Parse\s*\(\s*r\.',
+        r'text/template.*\.Parse\s*\(\s*r\.',
+        r'html/template.*\.Parse\s*\(\s*r\.',
+        r'\.Parse\s*\(\s*r\.FormValue\s*\(',
+        r'\.Parse\s*\(\s*r\.URL\.Query',
+        r'\.Parse\s*\(\s*fmt\.Sprintf',
+        r'\.Parse\s*\(\s*.*\+.*r\.',
+        r'template\.ParseGlob\s*\(\s*r\.',
+        
+        # Pongo2
+        r'pongo2\.FromString\s*\(\s*r\.',
+        r'pongo2\.FromString\s*\(\s*.*r\.Form',
+        r'pongo2\.Must\s*\(\s*.*FromString\s*\(\s*r\.',
+        r'pongo2\.FromBytes\s*\(\s*.*r\.',
+        
+        # Jet
+        r'jet\.NewSet\s*\([^)]*\)\.Parse\s*\(\s*r\.',
+        r'views\.GetTemplate\s*\(\s*r\.',
+        
+        # Ace
+        r'ace\.Load\s*\(\s*r\.',
+        
+        # Amber
+        r'amber\.CompileString\s*\(\s*r\.',
+        
+        # Quicktemplate
+        r'Write.*\(\s*r\.Form',
+        
+        # Hero
+        r'hero\.Render\s*\(\s*r\.',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".go"],
+    false_positive_patterns=[
+        r'\.ParseFiles\s*\(',
+        r'\.ParseGlob\s*\(\s*["\']',
+        r'template\.HTMLEscapeString',
+        r'html\.EscapeString',
+        r'url\.QueryEscape',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SSTI - Dangerous Template Payloads/Patterns",
+    category=VulnCategory.SSTI,
+    patterns=[
+        # Jinja2/Twig exploitation patterns
+        r'\{\{\s*config\s*\}\}',
+        r'\{\{\s*self\._TemplateReference__context',
+        r'\{\{.*__class__.*__mro__',
+        r'\{\{.*__class__.*__base__',
+        r'\{\{.*__class__.*__subclasses__',
+        r'\{\{.*__globals__',
+        r'\{\{.*__builtins__',
+        r'\{\{.*__import__',
+        r'\{\{.*lipsum\.__globals__',
+        r'\{\{.*cycler\.__init__',
+        r'\{\{.*joiner\.__init__',
+        r'\{\{.*namespace\.__init__',
+        r'\{\{.*request\.application',
+        r'\{\{.*request\.__class__',
+        r'\{\{.*\[["\']\w+["\']\]\.__',
+        r'\{\{.*\|attr\s*\(',
+        r'\{\%.*import\s+os',
+        r'\{\%.*from\s+os\s+import',
+        
+        # Freemarker exploitation
+        r'<#assign\s+.*=.*ObjectConstructor',
+        r'<#assign\s+.*=.*\.class\.forName',
+        r'<#assign\s+.*=.*getRuntime',
+        r'freemarker\.template\.utility\.Execute',
+        r'freemarker\.template\.utility\.ObjectConstructor',
+        r'\?new\s*\(\s*\)',
+        r'\.getClassLoader',
+        r'\.newInstance\s*\(',
+        
+        # Velocity exploitation
+        r'#set\s*\(\s*\$.*=.*getClass\s*\(',
+        r'#set\s*\(\s*\$.*=.*\.class\.forName',
+        r'#set\s*\(\s*\$.*=.*getRuntime',
+        r'\$class\.inspect',
+        r'\$class\.forName',
+        r'#evaluate\s*\(\s*\$',
+        r'#include\s*\(\s*\$',
+        r'#parse\s*\(\s*\$',
+        
+        # OGNL exploitation (Struts2)
+        r'%\{\s*#.*=.*@',
+        r'%\{.*getRuntime',
+        r'%\{.*ProcessBuilder',
+        r'\(#.*=.*@java\.lang',
+        r'#_memberAccess',
+        r'#context',
+        r'#application',
+        r'#session',
+        r'OgnlContext',
+        
+        # SpEL exploitation
+        r'\$\{T\s*\(\s*java\.lang',
+        r'\$\{.*Runtime.*exec',
+        r'\$\{.*ProcessBuilder',
+        r'\$\{.*getClass\(\)\.forName',
+        r'#\{T\s*\(\s*java\.lang',
+        r'new\s+java\.lang\.ProcessBuilder',
+        r'T\s*\(\s*java\.lang\.Runtime\s*\)',
+        
+        # Pebble exploitation
+        r'\{\{.*\.getClass\(\)',
+        r'\{\{.*beans\.get',
+        r'\{\{.*getRuntime',
+        
+        # Smarty exploitation
+        r'\{php\}.*exec',
+        r'\{php\}.*system',
+        r'\{php\}.*passthru',
+        r'\{php\}.*shell_exec',
+        r'\{Smarty_Internal_Write_File',
+        
+        # ERB exploitation
+        r'<%=.*`.*%>',  # Command substitution
+        r'<%=.*system\s*\(',
+        r'<%=.*exec\s*\(',
+        r'<%=.*IO\.popen',
+        r'<%=.*Open3',
+        
+        # Generic exploitation patterns
+        r'__proto__',
+        r'constructor\s*\[',
+        r'prototype\s*\.',
+        r'globalThis',
+        r'Function\s*\(\s*["\']',  # Function constructor
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".py", ".php", ".java", ".js", ".ts", ".rb", ".go", ".tpl", ".html", ".htm", ".ftl", ".vm", ".erb", ".kt", ".groovy"],
+),
 
     # =========================================================================
-    # SSRF (Server-Side Request Forgery) PATTERNS
-    # =========================================================================
+# SSRF (Server-Side Request Forgery) PATTERNS
+# =========================================================================
 
-    VulnerabilityPattern(
-        name="SSRF - Dynamic URL Fetch (Node.js)",
-        category=VulnCategory.SSRF,
-        patterns=[
-            r'fetch\s*\(\s*req\.(body|query|params)',
-            r'fetch\s*\(\s*`.*\$\{.*req\.',
-            r'axios\.(get|post|put|delete|patch|request)\s*\(\s*req\.',
-            r'axios\s*\(\s*\{[^}]*url\s*:\s*req\.',
-            r'http\.get\s*\(\s*req\.',
-            r'https\.get\s*\(\s*req\.',
-        ],
-        severity=Severity.HIGH,
-        languages=[".js", ".ts"],
-    ),
-    VulnerabilityPattern(
-        name="SSRF - Dynamic URL Fetch (Python)",
-        category=VulnCategory.SSRF,
-        patterns=[
-            r'requests\.(get|post|put|delete|patch|head|options)\s*\(\s*.*request\.(form|args|json|data)',
-            r'urllib\.request\.urlopen\s*\(\s*.*request\.',
-            r'urllib\.request\.urlopen\s*\(\s*[^)]*\+',
-            r'httpx\.(get|post|put|delete)\s*\(\s*.*request\.',
-        ],
-        severity=Severity.HIGH,
-        languages=[".py"],
-    ),
-    VulnerabilityPattern(
-        name="SSRF - Dynamic URL Fetch (PHP)",
-        category=VulnCategory.SSRF,
-        patterns=[
-            r'file_get_contents\s*\(\s*\$_(GET|POST|REQUEST)',
-            r'file_get_contents\s*\(\s*\$',
-            r'curl_setopt\s*\([^,]+,\s*CURLOPT_URL\s*,\s*\$',
-            r'curl_init\s*\(\s*\$',
-        ],
-        severity=Severity.HIGH,
-        languages=[".php"],
-    ),
-    VulnerabilityPattern(
-        name="SSRF - Dynamic URL Fetch (C#)",
-        category=VulnCategory.SSRF,
-        patterns=[
-            r'HttpClient.*GetAsync\s*\(\s*.*Request\.',
-            r'WebClient.*Download.*\s*\(\s*.*Request\.',
-            r'WebRequest\.Create\s*\(\s*.*Request\.',
-            r'new\s+Uri\s*\(\s*.*Request\.',
-            r'HttpClient.*GetStringAsync\s*\(\s*.*Request',
-            r'HttpClient.*PostAsync\s*\(\s*.*Request',
-        ],
-        severity=Severity.HIGH,
-        languages=[".cs"],
-    ),
-    VulnerabilityPattern(
-        name="SSRF - Cloud Metadata Access",
-        category=VulnCategory.SSRF,
-        patterns=[
-            r'169\.254\.169\.254',
-            r'metadata\.google\.internal',
-            r'metadata\.azure\.com',
-            r'100\.100\.100\.200',
-        ],
-        severity=Severity.INFO,
-        languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go", ".kt"],
-    ),
+VulnerabilityPattern(
+    name="SSRF - Dynamic URL Fetch (Node.js)",
+    category=VulnCategory.SSRF,
+    patterns=[
+        # Fetch API
+        r'fetch\s*\(\s*req\.(body|query|params)',
+        r'fetch\s*\(\s*`[^`]*\$\{[^}]*req\.',
+        r'fetch\s*\(\s*["\'].*\+.*req\.',
+        r'fetch\s*\(\s*\w+\s*\)',  # fetch(userVar) - variable from user input
+        
+        # Axios
+        r'axios\.(get|post|put|delete|patch|head|options|request)\s*\(\s*req\.',
+        r'axios\.(get|post|put|delete|patch|head|options|request)\s*\(\s*`[^`]*\$\{',
+        r'axios\.(get|post|put|delete|patch|head|options|request)\s*\(\s*["\'].*\+',
+        r'axios\s*\(\s*\{[^}]*url\s*:\s*req\.',
+        r'axios\s*\(\s*\{[^}]*url\s*:\s*`[^`]*\$\{',
+        
+        # Native http/https modules
+        r'https?\.get\s*\(\s*req\.(body|query|params)',
+        r'https?\.get\s*\(\s*`[^`]*\$\{',
+        r'https?\.get\s*\(\s*["\'].*\+',
+        r'https?\.request\s*\(\s*req\.',
+        r'https?\.request\s*\(\s*\{[^}]*hostname?\s*:\s*req\.',
+        r'https?\.request\s*\(\s*\{[^}]*host\s*:\s*req\.',
+        r'https?\.request\s*\(\s*\{[^}]*path\s*:\s*req\.',
+        
+        # Got, node-fetch, superagent, needle
+        r'got\s*\(\s*req\.(body|query|params)',
+        r'got\s*\(\s*`[^`]*\$\{',
+        r'got\.(get|post|put|delete|patch)\s*\(\s*req\.',
+        r'needle\s*\(\s*["\']get["\'],\s*req\.',
+        r'needle\.(get|post|put|delete|patch)\s*\(\s*req\.',
+        r'superagent\.(get|post|put|delete|patch)\s*\(\s*req\.',
+        r'request\s*\(\s*req\.(body|query|params)',
+        r'request\s*\(\s*\{[^}]*url\s*:\s*req\.',
+        
+        # URL constructor with user input
+        r'new\s+URL\s*\(\s*req\.(body|query|params)',
+        r'new\s+URL\s*\(\s*`[^`]*\$\{[^}]*req\.',
+        
+        # Puppeteer/Playwright (headless browser SSRF)
+        r'page\.goto\s*\(\s*req\.',
+        r'page\.goto\s*\(\s*`[^`]*\$\{',
+        r'page\.navigate\s*\(\s*req\.',
+        r'browser\.newPage.*goto\s*\(\s*req\.',
+    ],
+    severity=Severity.HIGH,
+    languages=[".js", ".ts", ".jsx", ".tsx"],
+    false_positive_patterns=[
+        r'https?://localhost',
+        r'https?://127\.0\.0\.1',
+        r'isValidUrl\s*\(',
+        r'validateUrl\s*\(',
+        r'allowedHosts',
+        r'whitelist',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SSRF - Dynamic URL Fetch (Python)",
+    category=VulnCategory.SSRF,
+    patterns=[
+        # requests library
+        r'requests\.(get|post|put|delete|patch|head|options)\s*\(\s*request\.(form|args|json|data|values)',
+        r'requests\.(get|post|put|delete|patch|head|options)\s*\(\s*f["\']',
+        r'requests\.(get|post|put|delete|patch|head|options)\s*\(\s*["\'].*\+',
+        r'requests\.(get|post|put|delete|patch|head|options)\s*\(\s*["\'].*\.format\s*\(',
+        r'requests\.(get|post|put|delete|patch|head|options)\s*\(\s*url\s*\)',  # variable
+        
+        # urllib
+        r'urllib\.request\.urlopen\s*\(\s*request\.',
+        r'urllib\.request\.urlopen\s*\(\s*f["\']',
+        r'urllib\.request\.urlopen\s*\(\s*["\'].*\+',
+        r'urllib\.request\.urlopen\s*\(\s*["\'].*\.format\s*\(',
+        r'urlopen\s*\(\s*request\.',
+        r'urllib\.request\.Request\s*\(\s*request\.',
+        
+        # httpx (async)
+        r'httpx\.(get|post|put|delete|patch|head|options)\s*\(\s*request\.',
+        r'httpx\.AsyncClient\s*\(\s*\)\.get\s*\(\s*request\.',
+        r'await\s+httpx\.(get|post|put|delete|patch)\s*\(\s*f["\']',
+        r'client\.(get|post|put|delete)\s*\(\s*request\.(form|args|json)',
+        
+        # aiohttp (async)
+        r'session\.(get|post|put|delete|patch)\s*\(\s*request\.',
+        r'aiohttp\.ClientSession\s*\(\s*\)\.get\s*\(\s*request\.',
+        r'await\s+session\.(get|post)\s*\(\s*f["\']',
+        
+        # http.client
+        r'http\.client\.HTTPConnection\s*\(\s*request\.',
+        r'HTTPConnection\s*\(\s*request\.',
+        r'HTTPSConnection\s*\(\s*request\.',
+        
+        # pycurl
+        r'pycurl.*CURLOPT_URL.*request\.',
+        r'curl\.setopt\s*\(.*URL.*request\.',
+    ],
+    severity=Severity.HIGH,
+    languages=[".py"],
+    false_positive_patterns=[
+        r'validate_url',
+        r'is_safe_url',
+        r'ALLOWED_HOSTS',
+        r'urlparse.*netloc.*in\s+',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SSRF - Dynamic URL Fetch (PHP)",
+    category=VulnCategory.SSRF,
+    patterns=[
+        # file_get_contents
+        r'file_get_contents\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)',
+        r'file_get_contents\s*\(\s*\$[a-zA-Z_]\w*\s*\)',
+        r'file_get_contents\s*\(\s*["\'].*\.\s*\$',
+        
+        # cURL
+        r'curl_setopt\s*\([^,]+,\s*CURLOPT_URL\s*,\s*\$_(GET|POST|REQUEST)',
+        r'curl_setopt\s*\([^,]+,\s*CURLOPT_URL\s*,\s*\$',
+        r'curl_init\s*\(\s*\$_(GET|POST|REQUEST)',
+        r'curl_init\s*\(\s*\$[a-zA-Z_]\w*\s*\)',
+        r'curl_setopt_array\s*\([^,]+,\s*\[[^\]]*CURLOPT_URL\s*=>\s*\$',
+        
+        # fopen with URL wrappers
+        r'fopen\s*\(\s*\$_(GET|POST|REQUEST)',
+        r'fopen\s*\(\s*["\']https?://.*\.\s*\$',
+        
+        # Guzzle
+        r'->request\s*\(\s*["\']GET["\'],\s*\$',
+        r'->get\s*\(\s*\$_(GET|POST|REQUEST)',
+        r'new\s+Client.*->get\s*\(\s*\$',
+        
+        # copy() with URL
+        r'copy\s*\(\s*\$_(GET|POST|REQUEST)',
+        r'copy\s*\(\s*["\']https?://.*\.\s*\$',
+        
+        # readfile with URL
+        r'readfile\s*\(\s*\$_(GET|POST|REQUEST)',
+    ],
+    severity=Severity.HIGH,
+    languages=[".php"],
+    false_positive_patterns=[
+        r'filter_var.*FILTER_VALIDATE_URL',
+        r'parse_url.*\[.host.\].*===',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SSRF - Dynamic URL Fetch (Java)",
+    category=VulnCategory.SSRF,
+    patterns=[
+        # URL/HttpURLConnection
+        r'new\s+URL\s*\(\s*request\.getParameter',
+        r'new\s+URL\s*\(\s*.*\+.*request\.get',
+        r'URL\s*\(\s*.*\+.*getParameter',
+        r'openConnection\s*\(\s*\).*getParameter',
+        
+        # HttpClient (Java 11+)
+        r'HttpClient.*send\s*\(.*request\.getParameter',
+        r'HttpRequest\.newBuilder\s*\(\s*\)\.uri\s*\(.*request\.get',
+        
+        # Apache HttpClient
+        r'HttpGet\s*\(\s*request\.getParameter',
+        r'HttpPost\s*\(\s*request\.getParameter',
+        r'new\s+HttpGet\s*\(\s*.*\+',
+        r'new\s+HttpPost\s*\(\s*.*\+',
+        
+        # OkHttp
+        r'Request\.Builder\s*\(\s*\)\.url\s*\(.*request\.get',
+        r'new\s+Request\.Builder\s*\(\s*\)\.url\s*\(\s*.*\+',
+        
+        # RestTemplate (Spring)
+        r'restTemplate\.(getForObject|getForEntity|postForObject|exchange)\s*\(\s*.*request\.get',
+        r'RestTemplate.*\.(get|post).*\(\s*.*\+',
+        
+        # WebClient (Spring WebFlux)
+        r'webClient\.(get|post|put|delete)\s*\(\s*\)\.uri\s*\(.*request\.get',
+    ],
+    severity=Severity.HIGH,
+    languages=[".java", ".kt"],
+    false_positive_patterns=[
+        r'UriComponentsBuilder.*whitelist',
+        r'isAllowedHost',
+    ],
+),
+
+VulnerabilityPattern(
+    name="SSRF - Dynamic URL Fetch (C#)",
+    category=VulnCategory.SSRF,
+    patterns=[
+        # HttpClient
+        r'HttpClient.*Get\w*Async\s*\(\s*.*Request\.(Query|Form|Body)',
+        r'HttpClient.*Get\w*Async\s*\(\s*\$"',
+        r'HttpClient.*Get\w*Async\s*\(\s*["\'].*\+',
+        r'HttpClient.*Post\w*Async\s*\(\s*.*Request\.',
+        r'HttpClient.*Send\w*Async\s*\(\s*.*Request\.',
+        r'new\s+HttpClient\s*\(\s*\).*Get.*\(\s*.*\+',
+        
+        # WebClient (legacy)
+        r'WebClient.*Download\w*\s*\(\s*.*Request\.',
+        r'WebClient.*Download\w*\s*\(\s*\$"',
+        r'WebClient.*Upload\w*\s*\(\s*.*Request\.',
+        r'new\s+WebClient\s*\(\s*\)\.Download.*\(\s*.*\+',
+        
+        # WebRequest
+        r'WebRequest\.Create\s*\(\s*.*Request\.',
+        r'WebRequest\.Create\s*\(\s*\$"',
+        r'HttpWebRequest.*Create\s*\(\s*.*Request\.',
+        
+        # Uri construction
+        r'new\s+Uri\s*\(\s*.*Request\.(Query|Form)',
+        r'new\s+Uri\s*\(\s*\$".*\{.*Request\.',
+        
+        # RestSharp
+        r'RestClient\s*\(\s*.*Request\.',
+        r'new\s+RestClient\s*\(\s*\$"',
+        r'new\s+RestRequest\s*\(\s*.*Request\.',
+    ],
+    severity=Severity.HIGH,
+    languages=[".cs"],
+    false_positive_patterns=[
+        r'IsValidUri',
+        r'AllowedHosts',
+        r'Uri\.IsWellFormedUriString',
+    ],
+),
 ]
 
 
