@@ -2587,9 +2587,9 @@ VulnerabilityPattern(
 
 # Binary patterns for DLL/EXE analysis
 BINARY_PATTERNS = [
-    # =========================================================================
+    # =============================================================================
     # CREDENTIALS & SECRETS
-    # =========================================================================
+    # =============================================================================
     {
         "name": "Hardcoded Connection String",
         "pattern": r'(Data Source|Server|Initial Catalog|User ID|Password|Integrated Security|Provider|Persist Security Info|Trusted_Connection|Database|Uid|Pwd|DSN|Driver)\s*=[^;]*;',
@@ -2615,10 +2615,10 @@ BINARY_PATTERNS = [
         "pattern": r'-----BEGIN\s+CERTIFICATE-----',
         "severity": Severity.MEDIUM
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # CLOUD PROVIDER CREDENTIALS
-    # =========================================================================
+    # =============================================================================
     {
         "name": "AWS Credentials",
         "pattern": r'(AKIA[0-9A-Z]{16}|ABIA[0-9A-Z]{16}|ACCA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|aws_secret_access_key\s*[=:]\s*["\'][^"\']+|aws_access_key_id\s*[=:]\s*["\'][^"\']+)',
@@ -2649,10 +2649,10 @@ BINARY_PATTERNS = [
         "pattern": r'[hH]eroku[_-]?(api[_-]?key|auth[_-]?token)\s*[=:]\s*["\']?[a-f0-9-]{36}',
         "severity": Severity.CRITICAL
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # API KEYS & TOKENS
-    # =========================================================================
+    # =============================================================================
     {
         "name": "GitHub Token",
         "pattern": r'(ghp_[a-zA-Z0-9]{36}|gho_[a-zA-Z0-9]{36}|ghu_[a-zA-Z0-9]{36}|ghs_[a-zA-Z0-9]{36}|ghr_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59})',
@@ -2743,10 +2743,10 @@ BINARY_PATTERNS = [
         "pattern": r'Authorization:\s*Bearer\s+[a-zA-Z0-9_-]{20,}',
         "severity": Severity.MEDIUM
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # DATABASE
-    # =========================================================================
+    # =============================================================================
     {
         "name": "SQL Query Pattern",
         "pattern": r'(SELECT\s+[\w\*,\s]+\s+FROM\s+\w+|INSERT\s+INTO\s+\w+\s*\(|UPDATE\s+\w+\s+SET\s+\w+|DELETE\s+FROM\s+\w+\s+WHERE|DROP\s+(TABLE|DATABASE)\s+\w+|TRUNCATE\s+TABLE\s+\w+)',
@@ -2762,54 +2762,104 @@ BINARY_PATTERNS = [
         "pattern": r'(mongodb|postgres|mysql|redis|mssql)(\+srv)?://[^:"\'\s]+:[^@"\'\s]+@[^"\'\s]+',
         "severity": Severity.CRITICAL
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # DESERIALIZATION (RCE VECTORS)
-    # =========================================================================
+    # =============================================================================
     {
-        "name": "Deserialization - .NET Critical",
-        "pattern": r'(BinaryFormatter|ObjectStateFormatter|NetDataContractSerializer|LosFormatter|SoapFormatter|TypeNameHandling\.(All|Auto|Objects|Arrays)|XamlReader\.Load|ObjectDataProvider|ActivitySurrogateSelector)',
+        "name": "Deserialization - .NET Critical (RCE)",
+        "pattern": r'(BinaryFormatter|ObjectStateFormatter|NetDataContractSerializer|LosFormatter|SoapFormatter|TypeNameHandling|set_TypeNameHandling|XamlReader|XamlServices|ObjectDataProvider|ActivitySurrogateSelector|WindowsIdentity|ClaimsPrincipal|RolePrincipal|WindowsPrincipal|GenericPrincipal|ysoserial)',
         "severity": Severity.CRITICAL
     },
     {
-        "name": "Deserialization - .NET Review",
-        "pattern": r'(DataContractSerializer|XmlSerializer|JavaScriptSerializer|JsonConvert\.DeserializeObject)',
-        "severity": Severity.MEDIUM
-    },
-    {
-        "name": "Deserialization - Java",
-        "pattern": r'(ObjectInputStream|XMLDecoder|XStream|ObjectMapper\.enableDefaultTyping|readObject\s*\(|readUnshared\s*\(|Yaml\.load\s*\(|yaml\.unsafe_load|Kryo|Hessian2Input)',
+        "name": "Deserialization - .NET JSON (Review)",
+        "pattern": r'(JsonConvert\.DeserializeObject|JsonSerializer\.Deserialize|Newtonsoft\.Json|System\.Text\.Json|JavaScriptSerializer|DataContractJsonSerializer|Json\.Decode|JObject\.Parse|JArray\.Parse|JsonTextReader)',
         "severity": Severity.HIGH
     },
     {
+        "name": "Deserialization - .NET XML (Review)",
+        "pattern": r'(XmlSerializer|DataContractSerializer|XmlObjectSerializer|XmlMessageFormatter|SoapFormatter|XmlTextReader|XDocument\.Load|XElement\.Load|XmlReader\.Create)',
+        "severity": Severity.MEDIUM
+    },
+    {
+        "name": "Deserialization - .NET Resources",
+        "pattern": r'(ResourceReader|ResXResourceReader|ResXResourceSet|LooselyLinkedResourceReference)',
+        "severity": Severity.MEDIUM
+    },
+    {
+        "name": "Deserialization - .NET ViewState",
+        "pattern": r'(LosFormatter|ObjectStateFormatter|ViewState|__VIEWSTATE|EnableViewStateMac\s*=\s*false|ViewStateEncryptionMode)',
+        "severity": Severity.CRITICAL
+    },
+    {
+        "name": "Deserialization - .NET Remoting",
+        "pattern": r'(BinaryServerFormatterSink|SoapServerFormatterSink|RemotingConfiguration|TcpChannel|HttpChannel|IpcChannel|ChannelServices\.RegisterChannel)',
+        "severity": Severity.CRITICAL
+    },
+    {
+        "name": "Deserialization - .NET WCF",
+        "pattern": r'(DataContractSerializer|NetDataContractSerializer|XmlSerializer|DataContractJsonSerializer|ServiceHost|ChannelFactory|WcfServiceHost|OperationContract)',
+        "severity": Severity.MEDIUM
+    },
+    {
+        "name": "Deserialization - .NET Gadgets",
+        "pattern": r'(TypeConfuseDelegate|TextFormattingRunProperties|PSObject|ClaimsIdentity|WindowsClaimsIdentity|SessionSecurityToken|RolePrincipal|AxHost\.State|DataSet|TypedTableBase)',
+        "severity": Severity.CRITICAL
+    },
+    {
+        "name": "Deserialization - Java Critical",
+        "pattern": r'(ObjectInputStream|XMLDecoder|XStream|readObject|readUnshared|readExternal|ObjectMapper\.enableDefaultTyping|JsonTypeInfo\.Id\.CLASS|JsonTypeInfo\.Id\.MINIMAL_CLASS|SerializationConfig|DefaultTyping)',
+        "severity": Severity.CRITICAL
+    },
+    {
+        "name": "Deserialization - Java Libraries",
+        "pattern": r'(SnakeYAML|Yaml\.load|yaml\.unsafe_load|Kryo|Hessian2Input|Hessian2Output|BurlapInput|Castor|Marshaller|Unmarshaller|XMLBeanInfo|JBossMarshaller|JBossUnmarshaller)',
+        "severity": Severity.HIGH
+    },
+    {
+        "name": "Deserialization - Java Gadgets",
+        "pattern": r'(CommonsCollections|CommonsBeanutils|CommonsLogging|Spring\d|Hibernate|JBossInterceptors|JavassistWeld|Jdk7u21|URLDNS|Wicket|FileUpload|Clojure|C3P0|JRMP|JRMPClient|JRMPListener)',
+        "severity": Severity.CRITICAL
+    },
+    {
         "name": "Deserialization - PHP",
-        "pattern": r'(unserialize\s*\(\s*\$|__wakeup\s*\(|phar://)',
+        "pattern": r'(unserialize\s*\(|__wakeup|__destruct|__toString|PharData|phar://|Serializable|JsonSerializable)',
         "severity": Severity.HIGH
     },
     {
         "name": "Deserialization - Python",
-        "pattern": r'(pickle\.loads?\s*\(|cPickle\.loads?\s*\(|marshal\.loads?\s*\(|yaml\.load\s*\([^)]*Loader\s*=\s*yaml\.(?:Unsafe|Full)Loader|yaml\.unsafe_load)',
+        "pattern": r'(pickle\.(loads?|dump|Unpickler)|cPickle\.(loads?|dump)|_pickle\.(loads?|dump)|dill\.(loads?|dump)|shelve\.open|marshal\.(loads?|dump)|yaml\.load|yaml\.unsafe_load|yaml\.full_load|jsonpickle\.(decode|encode))',
         "severity": Severity.HIGH
     },
     {
         "name": "Deserialization - Ruby",
-        "pattern": r'(Marshal\.load\s*\(|YAML\.load\s*\([^)]*permitted)',
+        "pattern": r'(Marshal\.(load|dump|restore)|YAML\.(load|unsafe_load)|Psych\.(load|unsafe_load)|Oj\.(load|dump)|Ox\.(load|parse))',
         "severity": Severity.HIGH
     },
     {
         "name": "Deserialization - Node.js",
-        "pattern": r'(node-serialize|serialize-javascript|cryo\.parse|funcster)',
+        "pattern": r'(node-serialize|serialize-javascript|cryo\.(parse|stringify)|funcster|js-yaml\.load|fast-json-stringify)',
         "severity": Severity.HIGH
     },
     {
-        "name": "Deserialization Magic Bytes",
-        "pattern": r'(aced0005[0-9a-f]{10,}|rO0AB[A-Za-z0-9+/]{20,}|O:[0-9]+:"[a-zA-Z])',
+        "name": "Deserialization - Magic Bytes/Signatures",
+        "pattern": r'(aced0005|rO0AB|H4sIA[A-Za-z0-9+/]{20,}|O:[0-9]+:"[a-zA-Z]|a:[0-9]+:\{|YTo[0-9]|Tz[0-9]+:|gANj|gASV|\x89HDF)',
         "severity": Severity.HIGH
     },
-    
-    # =========================================================================
+    {
+        "name": "Deserialization - Dangerous Interfaces",
+        "pattern": r'(ISerializable|IDeserializationCallback|IObjectReference|IFormatter|ISurrogateSelector|SerializationBinder|SerializationInfo|StreamingContext)',
+        "severity": Severity.MEDIUM
+    },
+    {
+        "name": "Deserialization - Type Resolution",
+        "pattern": r'(Type\.GetType|Assembly\.GetType|Activator\.CreateInstance|FormatterServices\.GetUninitializedObject|AppDomain\.CreateInstance|Type\.InvokeMember|BindToType)',
+        "severity": Severity.HIGH
+    },
+
+    # =============================================================================
     # WEAK CRYPTOGRAPHY
-    # =========================================================================
+    # =============================================================================
     {
         "name": "Weak Hash - MD5",
         "pattern": r'(MD5CryptoServiceProvider|MD5\.Create\s*\(|hashlib\.md5\s*\(|MessageDigest\.getInstance\s*\(\s*["\']MD5["\'])',
@@ -2845,10 +2895,10 @@ BINARY_PATTERNS = [
         "pattern": r'(IV\s*=\s*new\s+byte\s*\[\s*\]\s*\{|IV\s*=\s*["\'][0-9a-fA-F]{16,}["\']|nonce\s*=\s*["\'][^"\']{8,}["\'])',
         "severity": Severity.MEDIUM
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # COMMAND/CODE EXECUTION
-    # =========================================================================
+    # =============================================================================
     {
         "name": "Process Execution - .NET",
         "pattern": r'(Process\.Start\s*\(|new\s+ProcessStartInfo\s*\(|System\.Diagnostics\.Process\.Start)',
@@ -2894,10 +2944,10 @@ BINARY_PATTERNS = [
         "pattern": r'(cmd\.exe\s+/c|/bin/(sh|bash|zsh)\s+-c|powershell\.exe\s+-)',
         "severity": Severity.MEDIUM
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # DYNAMIC CODE EXECUTION
-    # =========================================================================
+    # =============================================================================
     {
         "name": "Eval/Dynamic Code - JavaScript",
         "pattern": r'(\beval\s*\(\s*[^)]+\)|new\s+Function\s*\(\s*[^)]+\)|setTimeout\s*\(\s*["\'][^"\']+["\']|setInterval\s*\(\s*["\'][^"\']+["\'])',
@@ -2928,10 +2978,10 @@ BINARY_PATTERNS = [
         "pattern": r'(SpelExpressionParser\s*\(\s*\)\.parseExpression|ELProcessor\.eval|ExpressionFactory\.createValueExpression)',
         "severity": Severity.HIGH
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # REFLECTION & DYNAMIC LOADING
-    # =========================================================================
+    # =============================================================================
     {
         "name": "Reflection - .NET Dynamic Invoke",
         "pattern": r'(\.GetMethod\s*\([^)]+\)\.Invoke|Type\.GetType\s*\([^)]+\)\.GetMethod|Activator\.CreateInstance\s*\(|Assembly\.Load(From|File)?\s*\()',
@@ -2957,10 +3007,10 @@ BINARY_PATTERNS = [
         "pattern": r'(URLClassLoader\s*\(|defineClass\s*\(|ClassLoader\.loadClass\s*\()',
         "severity": Severity.HIGH
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # INJECTION VECTORS
-    # =========================================================================
+    # =============================================================================
     {
         "name": "JNDI Lookup (Log4Shell)",
         "pattern": r'(\$\{jndi:(ldap|rmi|dns)://|InitialContext\s*\(\s*\)\.lookup\s*\(|Context\.lookup\s*\([^)]*\$)',
@@ -2986,10 +3036,10 @@ BINARY_PATTERNS = [
         "pattern": r'(__proto__\s*[=\[]|constructor\s*\[\s*["\']prototype|Object\.assign\s*\(\s*\{\s*\}\s*,\s*[^)]*req\.)',
         "severity": Severity.HIGH
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # FILE OPERATIONS
-    # =========================================================================
+    # =============================================================================
     {
         "name": "File Read Operations",
         "pattern": r'(File\.ReadAll(Text|Bytes|Lines)\s*\(|StreamReader\s*\([^)]*\$|file_get_contents\s*\(\s*\$|fs\.readFile(Sync)?\s*\([^)]*req\.)',
@@ -3010,10 +3060,10 @@ BINARY_PATTERNS = [
         "pattern": r'(ZipFile\.ExtractToDirectory|ZipArchive\.ExtractToDirectory|extractall\s*\(|tar\s+-x)',
         "severity": Severity.MEDIUM
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # NETWORK & SSRF
-    # =========================================================================
+    # =============================================================================
     {
         "name": "External URL",
         "pattern": r'https?://(?!localhost|127\.0\.0\.1|0\.0\.0\.0)[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}[^\s"\']*',
@@ -3034,10 +3084,10 @@ BINARY_PATTERNS = [
         "pattern": r'(HttpClient\.GetAsync\s*\([^)]*\$|WebRequest\.Create\s*\([^)]*\$|requests\.(get|post)\s*\([^)]*request\.|fetch\s*\([^)]*req\.)',
         "severity": Severity.HIGH
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # AUTHENTICATION & SESSION
-    # =========================================================================
+    # =============================================================================
     {
         "name": "Hardcoded Admin Credentials",
         "pattern": r'(admin|root|administrator)\s*[=:]\s*["\'][^"\']{4,}["\']',
@@ -3058,10 +3108,10 @@ BINARY_PATTERNS = [
         "pattern": r'(client_secret\s*[=:]\s*["\'][a-zA-Z0-9_-]{10,}["\'])',
         "severity": Severity.HIGH
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # LOGGING & DEBUG
-    # =========================================================================
+    # =============================================================================
     {
         "name": "Debug Mode Enabled",
         "pattern": r'(DEBUG\s*=\s*[Tt]rue|debug\s*:\s*true|FLASK_DEBUG\s*=\s*1|APP_DEBUG\s*=\s*true|NODE_ENV\s*[=:]\s*["\']development["\'])',
@@ -3072,10 +3122,10 @@ BINARY_PATTERNS = [
         "pattern": r'(printStackTrace\s*\(|customErrors\s+mode\s*=\s*["\']Off|IncludeExceptionDetailInFaults\s*=\s*true)',
         "severity": Severity.MEDIUM
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # MOBILE SPECIFIC
-    # =========================================================================
+    # =============================================================================
     {
         "name": "Android Sensitive Permissions",
         "pattern": r'android\.permission\.(READ_SMS|RECEIVE_SMS|READ_CONTACTS|ACCESS_FINE_LOCATION|CAMERA|RECORD_AUDIO|READ_CALL_LOG)',
@@ -3091,10 +3141,10 @@ BINARY_PATTERNS = [
         "pattern": r'(ALLOW_ALL_HOSTNAME_VERIFIER|trustAllCerts|setHostnameVerifier\s*\(\s*null|checkServerTrusted\s*\([^)]*\)\s*\{\s*\})',
         "severity": Severity.HIGH
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # DANGEROUS IMPORTS (INFO ONLY)
-    # =========================================================================
+    # =============================================================================
     {
         "name": "Dangerous .NET Import",
         "pattern": r'using\s+(System\.Reflection\.Emit|System\.Runtime\.InteropServices|System\.Diagnostics\.Process)',
@@ -3110,10 +3160,10 @@ BINARY_PATTERNS = [
         "pattern": r'^import\s+(pickle|subprocess|ctypes|marshal)$|^from\s+(pickle|subprocess|ctypes|marshal)\s+import',
         "severity": Severity.INFO
     },
-    
-    # =========================================================================
+
+    # =============================================================================
     # SENSITIVE DATA (Reduced False Positives)
-    # =========================================================================
+    # =============================================================================
     {
         "name": "Hardcoded IP (Non-Local)",
         "pattern": r'(?<![0-9])(?!0\.0\.0\.0|127\.0\.0\.1|255\.255\.255\.\d|1\.0\.0\.0|Version[=\s])([1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(?![0-9]|\.0\.0)',
@@ -3138,7 +3188,7 @@ BINARY_PATTERNS = [
         "name": "High Entropy String (Potential Secret)",
         "pattern": r'["\'][a-zA-Z0-9+/]{40,}={0,2}["\']',
         "severity": Severity.INFO
-    },
+    }
 ]
 
 
