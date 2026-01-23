@@ -767,51 +767,744 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
     ),
 
             # =========================================================================
-            # PROTOTYPE POLLUTION PATTERNS
-            # =========================================================================
+# PROTOTYPE POLLUTION PATTERNS - ENTERPRISE GRADE COMPREHENSIVE DETECTION
+# =========================================================================
+# Version: 2.0
+# Coverage: Direct pollution, library-based, recursive merge, JSON parsing,
+#           object cloning, path traversal, class pollution (Python)
+# Languages: JavaScript, TypeScript, Python (class pollution)
+# =========================================================================
 
-            VulnerabilityPattern(
-            name="Prototype Pollution - __proto__ Access",
-            category=VulnCategory.PROTOTYPE_POLLUTION,
-            patterns=[
-            r'\[.*__proto__.*\]\s*=',
-            r'\.__proto__\s*=',
-            r'\["__proto__"\]\s*=',
-            r"\['__proto__'\]\s*=",
-            r'__proto__\s*:\s*\{',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".js", ".ts", ".jsx", ".tsx"],
-    false_positive_patterns=[r'hasOwnProperty.*__proto__', r'===\s*["\']__proto__["\']', r'!==\s*["\']__proto__["\']', r'typeof superClass', r'Object\.getPrototypeOf', r'Object\.create\('],
-    ),
-            VulnerabilityPattern(
-            name="Prototype Pollution - constructor.prototype",
-            category=VulnCategory.PROTOTYPE_POLLUTION,
-            patterns=[
-            r'\[.*constructor.*\]\s*\[.*prototype.*\]\s*=',
-            r'\.constructor\.prototype\s*=',
-            r'\["constructor"\]\s*\["prototype"\]\s*=',
-            r"\['constructor'\]\s*\['prototype'\]\s*=",
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".js", ".ts", ".jsx", ".tsx"],
-    false_positive_patterns=[r'Object\.create\(', r'typeof superClass', r'_inherits'],
-    ),
-            VulnerabilityPattern(
-            name="Prototype Pollution - Unsafe Deep Merge",
-            category=VulnCategory.PROTOTYPE_POLLUTION,
-            patterns=[
-            r'_\.merge\s*\(\s*[^,]+,\s*req\.',
-            r'_\.defaultsDeep\s*\(\s*[^,]+,\s*req\.',
-            r'lodash\.merge\s*\(\s*[^,]+,\s*req\.',
-            r'deepmerge\s*\(\s*[^,]+,\s*req\.',
-            r'hoek\.merge\s*\(\s*[^,]+,\s*req\.',
-            r'hoek\.applyToDefaults\s*\(\s*[^,]+,\s*req\.',
-            r'\$\.extend\s*\(\s*true\s*,\s*[^,]+,\s*req\.',
-        ],
-        severity=Severity.HIGH,
-        languages=[".js", ".ts", ".jsx", ".tsx"],
-    ),
+# =============================================================================
+# DIRECT PROTOTYPE ACCESS - __proto__
+# =============================================================================
+
+VulnerabilityPattern(
+    name="Prototype Pollution - __proto__ Direct Assignment",
+    category=VulnCategory.PROTOTYPE_POLLUTION,
+    patterns=[
+        # =====================================================================
+        # DIRECT __proto__ ASSIGNMENT
+        # =====================================================================
+        
+        # Bracket notation assignment
+        r'\[[\s]*["\']__proto__["\'][\s]*\]\s*=',
+        r'\[[\s]*`__proto__`[\s]*\]\s*=',
+        r'\[.*__proto__.*\]\s*=(?!=)',  # Assignment but not comparison
+        
+        # Dot notation assignment
+        r'\.__proto__\s*=(?!=)',
+        
+        # Nested property assignment
+        r'\[[\s]*["\']__proto__["\'][\s]*\]\s*\[',  # obj["__proto__"]["polluted"]
+        r'\.__proto__\s*\[',  # obj.__proto__["polluted"]
+        r'\.__proto__\.\w+\s*=',  # obj.__proto__.polluted = 
+        
+        # Object literal with __proto__
+        r'\{\s*["\']?__proto__["\']?\s*:',
+        r'\{\s*__proto__\s*:',
+        r'__proto__\s*:\s*\{',
+        
+        # =====================================================================
+        # __proto__ IN USER INPUT CONTEXT
+        # =====================================================================
+        
+        # Direct from request
+        r'req\.(body|query|params)\s*\[[\s]*["\']__proto__["\'][\s]*\]',
+        r'req\.(body|query|params)\s*\.\s*__proto__',
+        r'request\.(args|form|json|data)\s*\[[\s]*["\']__proto__["\'][\s]*\]',
+        
+        # Object spread with potential __proto__
+        r'\{\s*\.\.\.req\.(body|query|params)\s*\}',
+        r'\{\s*\.\.\.request\.(args|form|json|data)\s*\}',
+        r'\{\s*\.\.\.(?:userInput|userData|clientData|payload|data|input)\s*\}',
+        
+        # Destructuring from user input (can include __proto__)
+        r'const\s*\{[^}]*\}\s*=\s*req\.(body|query|params)',
+        r'let\s*\{[^}]*\}\s*=\s*req\.(body|query|params)',
+        r'var\s*\{[^}]*\}\s*=\s*req\.(body|query|params)',
+        
+        # =====================================================================
+        # DYNAMIC PROPERTY ACCESS WITH __proto__
+        # =====================================================================
+        
+        # Variable as key that could be __proto__
+        r'\[\s*(?:key|prop|property|name|attr|field|k|p)\s*\]\s*=',
+        r'\[\s*(?:key|prop|property|name|attr|field|k|p)\s*\]\s*\[',
+        
+        # Object.keys/entries iteration without filtering
+        r'Object\.(?:keys|entries|values)\s*\([^)]*\)\s*\.(?:forEach|map|reduce|filter)',
+        r'for\s*\(\s*(?:const|let|var)\s+(?:key|prop|k)\s+(?:in|of)',
+        
+        # =====================================================================
+        # JSON PARSING ATTACKS
+        # =====================================================================
+        
+        # JSON.parse without sanitization
+        r'JSON\.parse\s*\(\s*req\.(body|query|params)',
+        r'JSON\.parse\s*\(\s*request\.(args|form|json|data|body)',
+        r'JSON\.parse\s*\(\s*(?:userInput|userData|clientData|payload|data|input|str|string|text)\s*\)',
+        
+        # JSON with __proto__ in string (detection in data)
+        r'["\']__proto__["\']\s*:',
+        r'"__proto__"\s*:\s*\{',
+        r"'__proto__'\s*:\s*\{",
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"],
+    false_positive_patterns=[
+        r'hasOwnProperty\s*\(\s*["\']__proto__["\']',
+        r'===\s*["\']__proto__["\']',
+        r'!==\s*["\']__proto__["\']',
+        r'==\s*["\']__proto__["\']',
+        r'!=\s*["\']__proto__["\']',
+        r'typeof\s+superClass',
+        r'Object\.getPrototypeOf\s*\(',
+        r'Object\.setPrototypeOf\s*\(',
+        r'Object\.create\s*\(',
+        r'Reflect\.getPrototypeOf\s*\(',
+        r'Reflect\.setPrototypeOf\s*\(',
+        r'delete\s+[^;]*__proto__',
+        r'//.*__proto__',
+        r'/\*.*__proto__',
+        r'if\s*\([^)]*["\']__proto__["\']',
+        r'key\s*(?:===|!==|==|!=)\s*["\']__proto__["\']',
+        r'prop\s*(?:===|!==|==|!=)\s*["\']__proto__["\']',
+        r'\.filter\s*\([^)]*__proto__',
+        r'blacklist.*__proto__',
+        r'blocklist.*__proto__',
+        r'sanitize.*__proto__',
+    ],
+),
+
+# =============================================================================
+# CONSTRUCTOR.PROTOTYPE ACCESS
+# =============================================================================
+
+VulnerabilityPattern(
+    name="Prototype Pollution - constructor.prototype Access",
+    category=VulnCategory.PROTOTYPE_POLLUTION,
+    patterns=[
+        # =====================================================================
+        # DIRECT constructor.prototype ASSIGNMENT
+        # =====================================================================
+        
+        # Bracket notation
+        r'\[[\s]*["\']constructor["\'][\s]*\]\s*\[[\s]*["\']prototype["\'][\s]*\]',
+        r'\[[\s]*`constructor`[\s]*\]\s*\[[\s]*`prototype`[\s]*\]',
+        
+        # Dot notation
+        r'\.constructor\.prototype\s*[=\[]',
+        r'\.constructor\s*\[[\s]*["\']prototype["\'][\s]*\]',
+        
+        # Mixed notation
+        r'\[[\s]*["\']constructor["\'][\s]*\]\.prototype',
+        
+        # Assignment to constructor.prototype property
+        r'\.constructor\.prototype\.\w+\s*=',
+        r'\[[\s]*["\']constructor["\'][\s]*\]\s*\[[\s]*["\']prototype["\'][\s]*\]\s*\[',
+        
+        # =====================================================================
+        # CONSTRUCTOR MANIPULATION
+        # =====================================================================
+        
+        # Accessing constructor dynamically
+        r'\[\s*(?:key|prop|property|name)\s*\]\s*\[\s*["\']prototype["\']',
+        r'\[\s*["\']constructor["\'][\s]*\]\s*\[\s*(?:key|prop|property|name)\s*\]',
+        
+        # Object literal with constructor
+        r'\{\s*["\']?constructor["\']?\s*:\s*\{',
+        r'constructor\s*:\s*\{\s*["\']?prototype["\']?\s*:',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"],
+    false_positive_patterns=[
+        r'Object\.create\s*\(',
+        r'typeof\s+superClass',
+        r'_inherits',
+        r'__extends',
+        r'extends\s+\w+',
+        r'class\s+\w+\s+extends',
+        r'\.prototype\s*=\s*Object\.create\s*\(',
+        r'//.*constructor.*prototype',
+        r'/\*.*constructor.*prototype',
+        r'super\s*\(',
+        r'instanceof\s+',
+    ],
+),
+
+# =============================================================================
+# UNSAFE DEEP MERGE / EXTEND FUNCTIONS
+# =============================================================================
+
+VulnerabilityPattern(
+    name="Prototype Pollution - Unsafe Deep Merge/Extend",
+    category=VulnCategory.PROTOTYPE_POLLUTION,
+    patterns=[
+        # =====================================================================
+        # LODASH / UNDERSCORE (VULNERABLE VERSIONS)
+        # =====================================================================
+        
+        # _.merge with user input (any position)
+        r'_\.merge\s*\([^)]*req\.(body|query|params)',
+        r'_\.merge\s*\([^)]*request\.(args|form|json|data)',
+        r'_\.merge\s*\(\s*\{\s*\}\s*,\s*req\.(body|query|params)',
+        r'_\.merge\s*\(\s*[^,]+,\s*req\.(body|query|params)',
+        r'_\.merge\s*\(\s*[^,]+,\s*[^,]+,\s*req\.(body|query|params)',
+        
+        # _.defaultsDeep (vulnerable)
+        r'_\.defaultsDeep\s*\([^)]*req\.(body|query|params)',
+        r'_\.defaultsDeep\s*\([^)]*request\.(args|form|json|data)',
+        r'_\.defaultsDeep\s*\(\s*\{\s*\}\s*,',
+        r'_\.defaultsDeep\s*\(\s*[^,]+,\s*(?:userInput|userData|clientData|payload|data|input)',
+        
+        # _.mergeWith
+        r'_\.mergeWith\s*\([^)]*req\.(body|query|params)',
+        
+        # _.set with user-controlled path (path traversal to __proto__)
+        r'_\.set\s*\(\s*[^,]+,\s*req\.(body|query|params)',
+        r'_\.set\s*\(\s*[^,]+,\s*(?:path|key|prop)\s*,',
+        r'_\.setWith\s*\(\s*[^,]+,\s*req\.(body|query|params)',
+        
+        # lodash full name
+        r'lodash\.merge\s*\([^)]*req\.(body|query|params)',
+        r'lodash\.defaultsDeep\s*\([^)]*req\.(body|query|params)',
+        r'lodash\.set\s*\(\s*[^,]+,\s*req\.(body|query|params)',
+        
+        # =====================================================================
+        # JQUERY DEEP EXTEND
+        # =====================================================================
+        
+        # $.extend with deep=true
+        r'\$\.extend\s*\(\s*true\s*,\s*[^,]+,\s*req\.(body|query|params)',
+        r'\$\.extend\s*\(\s*true\s*,\s*\{\s*\}\s*,',
+        r'jQuery\.extend\s*\(\s*true\s*,\s*[^,]+,\s*req\.(body|query|params)',
+        r'jQuery\.extend\s*\(\s*true\s*,\s*\{\s*\}\s*,',
+        
+        # =====================================================================
+        # HOEK (HAPI ECOSYSTEM)
+        # =====================================================================
+        
+        r'[Hh]oek\.merge\s*\([^)]*req\.(body|query|params)',
+        r'[Hh]oek\.applyToDefaults\s*\([^)]*req\.(body|query|params)',
+        r'[Hh]oek\.applyToDefaultsWithShallow\s*\([^)]*req\.(body|query|params)',
+        r'[Hh]oek\.clone\s*\(\s*req\.(body|query|params)',
+        
+        # =====================================================================
+        # DEEPMERGE / DEEP-EXTEND PACKAGES
+        # =====================================================================
+        
+        # deepmerge
+        r'deepmerge\s*\(\s*[^,]+,\s*req\.(body|query|params)',
+        r'deepmerge\.all\s*\(\s*\[[^\]]*req\.(body|query|params)',
+        r'merge\s*\(\s*[^,]+,\s*req\.(body|query|params)\s*\)',  # Generic merge
+        
+        # deep-extend
+        r'deepExtend\s*\(\s*[^,]+,\s*req\.(body|query|params)',
+        r'deep-extend\s*\(\s*[^,]+,\s*req\.(body|query|params)',
+        
+        # extend (various packages)
+        r'extend\s*\(\s*true\s*,\s*[^,]+,\s*req\.(body|query|params)',
+        r'extend\s*\(\s*\{\s*\}\s*,\s*req\.(body|query|params)',
+        
+        # defaults-deep
+        r'defaultsDeep\s*\([^)]*req\.(body|query|params)',
+        
+        # object-path
+        r'objectPath\.set\s*\(\s*[^,]+,\s*req\.(body|query|params)',
+        
+        # dot-prop
+        r'dotProp\.set\s*\(\s*[^,]+,\s*req\.(body|query|params)',
+        
+        # =====================================================================
+        # MOUT.JS
+        # =====================================================================
+        
+        r'mout\.object\.deepMixIn\s*\([^)]*req\.(body|query|params)',
+        r'mout\.object\.merge\s*\([^)]*req\.(body|query|params)',
+        
+        # =====================================================================
+        # JS-YAML UNSAFE LOAD
+        # =====================================================================
+        
+        r'yaml\.load\s*\(\s*req\.(body|query|params)',
+        r'jsyaml\.load\s*\(\s*req\.(body|query|params)',
+        r'YAML\.parse\s*\(\s*req\.(body|query|params)',
+        
+        # =====================================================================
+        # GENERIC MERGE PATTERNS WITH USER INPUT
+        # =====================================================================
+        
+        # Common merge function names with user input
+        r'(?:deepMerge|mergeDeep|recursiveMerge|mergeRecursive|deepAssign|'
+        r'deepCopy|deepClone|cloneDeep|assignDeep|extendDeep|'
+        r'mergeObjects|objectMerge|combineObjects|mixIn|mixin)\s*\([^)]*req\.(body|query|params)',
+        
+        # Generic with common variable names
+        r'(?:merge|extend|assign|clone|copy)\s*\(\s*[^,]+,\s*(?:userInput|userData|clientData|payload|data|input|body|params|query)\s*[,\)]',
+    ],
+    severity=Severity.HIGH,
+    languages=[".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"],
+    false_positive_patterns=[
+        r'_\.merge\s*\(\s*[^,]+,\s*\{\s*["\'][a-zA-Z]+["\']\s*:',  # Static object
+        r'sanitize',
+        r'safeMerge',
+        r'secureMerge',
+        r'protectedMerge',
+        r'//.*merge',
+        r'/\*.*merge',
+        r'\.clone\s*\(\s*\)',  # No arguments
+        r'structuredClone\s*\(',  # Safe browser API
+    ],
+),
+
+# =============================================================================
+# OBJECT.ASSIGN WITH USER INPUT
+# =============================================================================
+
+VulnerabilityPattern(
+    name="Prototype Pollution - Object.assign with User Input",
+    category=VulnCategory.PROTOTYPE_POLLUTION,
+    patterns=[
+        # =====================================================================
+        # OBJECT.ASSIGN PATTERNS
+        # =====================================================================
+        
+        # Object.assign with empty target and user input
+        r'Object\.assign\s*\(\s*\{\s*\}\s*,\s*req\.(body|query|params)',
+        r'Object\.assign\s*\(\s*\{\s*\}\s*,\s*request\.(args|form|json|data)',
+        r'Object\.assign\s*\(\s*\{\s*\}\s*,\s*(?:userInput|userData|clientData|payload|data|input)\s*\)',
+        
+        # Object.assign with target and user input source
+        r'Object\.assign\s*\(\s*[^,]+,\s*req\.(body|query|params)',
+        r'Object\.assign\s*\(\s*[^,]+,\s*request\.(args|form|json|data)',
+        r'Object\.assign\s*\(\s*[^,]+,\s*\.\.\.req\.(body|query|params)',
+        
+        # Multiple sources including user input
+        r'Object\.assign\s*\(\s*[^,]+,\s*[^,]+,\s*req\.(body|query|params)',
+        
+        # =====================================================================
+        # SPREAD OPERATOR IN OBJECT LITERALS
+        # =====================================================================
+        
+        # Direct spread of user input
+        r'\{\s*\.\.\.req\.(body|query|params)',
+        r'\{\s*\.\.\.request\.(args|form|json|data)',
+        r'\{\s*\.\.\.(?:userInput|userData|clientData|payload|data|input)\s*[,\}]',
+        
+        # Spread in nested object
+        r'\{\s*\w+\s*:\s*\{\s*\.\.\.req\.(body|query|params)',
+        
+        # Array spread with objects
+        r'\[\s*\.\.\.req\.(body|query|params)',
+        
+        # =====================================================================
+        # OBJECT CREATION WITH USER INPUT
+        # =====================================================================
+        
+        # Object.fromEntries
+        r'Object\.fromEntries\s*\(\s*req\.(body|query|params)',
+        r'Object\.fromEntries\s*\([^)]*Object\.entries\s*\(\s*req\.(body|query|params)',
+        
+        # Object.defineProperty with user input
+        r'Object\.defineProperty\s*\(\s*[^,]+,\s*req\.(body|query|params)',
+        r'Object\.defineProperties\s*\(\s*[^,]+,\s*req\.(body|query|params)',
+    ],
+    severity=Severity.HIGH,
+    languages=[".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"],
+    false_positive_patterns=[
+        r'Object\.assign\s*\(\s*\{\s*\}\s*,\s*\{\s*["\'][a-zA-Z]+["\']\s*:',  # Static object
+        r'sanitize',
+        r'//.*Object\.assign',
+        r'/\*.*Object\.assign',
+        r'structuredClone\s*\(',
+    ],
+),
+
+# =============================================================================
+# RECURSIVE/CUSTOM MERGE FUNCTIONS (VULNERABLE PATTERNS)
+# =============================================================================
+
+VulnerabilityPattern(
+    name="Prototype Pollution - Vulnerable Custom Merge Implementation",
+    category=VulnCategory.PROTOTYPE_POLLUTION,
+    patterns=[
+        # =====================================================================
+        # DANGEROUS RECURSIVE MERGE PATTERNS
+        # =====================================================================
+        
+        # for...in loop without hasOwnProperty check
+        r'for\s*\(\s*(?:const|let|var)\s+\w+\s+in\s+\w+\s*\)\s*\{[^}]*\[\s*\w+\s*\]\s*=',
+        
+        # Recursive function assigning properties without filtering
+        r'function\s+(?:merge|extend|deepMerge|assign)\s*\([^)]*\)\s*\{[^}]*for\s*\(\s*(?:const|let|var)\s+\w+\s+in',
+        
+        # Object.keys without filtering __proto__
+        r'Object\.keys\s*\([^)]+\)\s*\.(?:forEach|map)\s*\([^)]*\{\s*[^}]*\[\s*\w+\s*\]\s*=',
+        
+        # =====================================================================
+        # PATH-BASED PROPERTY ACCESS (DOT NOTATION PARSING)
+        # =====================================================================
+        
+        # Setting property via path string (e.g., "a.b.__proto__.c")
+        r'\.split\s*\(\s*["\'][.\[\]]["\']',  # Splitting path
+        r'path\.split\s*\(',
+        r'key\.split\s*\(',
+        
+        # reduce() to traverse path
+        r'\.reduce\s*\(\s*\([^)]*\)\s*=>\s*[^,]+\[\s*\w+\s*\]',
+        r'\.reduce\s*\(\s*function\s*\([^)]*\)\s*\{[^}]*\[\s*\w+\s*\]',
+        
+        # Bracket notation with variable from split
+        r'\[\s*parts\[\w+\]\s*\]',
+        r'\[\s*keys\[\w+\]\s*\]',
+        r'\[\s*segments\[\w+\]\s*\]',
+        r'\[\s*path\[\w+\]\s*\]',
+        
+        # =====================================================================
+        # DYNAMIC KEY ASSIGNMENT
+        # =====================================================================
+        
+        # Direct assignment with dynamic key
+        r'target\s*\[\s*key\s*\]\s*=\s*source\s*\[\s*key\s*\]',
+        r'obj\s*\[\s*key\s*\]\s*=\s*value',
+        r'result\s*\[\s*prop\s*\]\s*=\s*input\s*\[\s*prop\s*\]',
+        
+        # Nested assignment
+        r'\[\s*key\s*\]\s*\[\s*\w+\s*\]\s*=',
+    ],
+    severity=Severity.MEDIUM,
+    languages=[".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"],
+    false_positive_patterns=[
+        r'hasOwnProperty\s*\(\s*(?:key|prop|k)',
+        r'Object\.hasOwn\s*\(',
+        r'Object\.prototype\.hasOwnProperty\.call\s*\(',
+        r'key\s*(?:===|!==|==|!=)\s*["\'](?:__proto__|constructor|prototype)["\']',
+        r'prop\s*(?:===|!==|==|!=)\s*["\'](?:__proto__|constructor|prototype)["\']',
+        r'blacklist',
+        r'blocklist',
+        r'whitelist',
+        r'allowlist',
+        r'(?:isPrototypePolluted|isUnsafeKey|isSafeKey)',
+        r'\.filter\s*\([^)]*(?:__proto__|constructor|prototype)',
+    ],
+),
+
+# =============================================================================
+# PROTOTYPE POLLUTION VIA QUERY STRING PARSING
+# =============================================================================
+
+VulnerabilityPattern(
+    name="Prototype Pollution - Query String Parsing",
+    category=VulnCategory.PROTOTYPE_POLLUTION,
+    patterns=[
+        # =====================================================================
+        # QS LIBRARY (OLDER VULNERABLE VERSIONS)
+        # =====================================================================
+        
+        r'qs\.parse\s*\(\s*req\.(url|query|originalUrl)',
+        r'qs\.parse\s*\(\s*(?:queryString|query|search)',
+        r'qs\.parse\s*\([^)]+,\s*\{\s*allowPrototypes\s*:\s*true',
+        
+        # =====================================================================
+        # QUERYSTRING MODULE
+        # =====================================================================
+        
+        r'querystring\.parse\s*\(\s*req\.(url|query)',
+        r'querystring\.parse\s*\(\s*(?:queryString|query|search)',
+        
+        # =====================================================================
+        # URL SEARCHPARAMS WITHOUT SANITIZATION
+        # =====================================================================
+        
+        r'new\s+URLSearchParams\s*\(\s*req\.(url|query)',
+        r'Object\.fromEntries\s*\(\s*new\s+URLSearchParams\s*\(',
+        r'Object\.fromEntries\s*\(\s*\w+\.entries\s*\(\s*\)\s*\)',  # Generic entries conversion
+        
+        # =====================================================================
+        # BODY PARSER WITH EXTENDED
+        # =====================================================================
+        
+        r'bodyParser\.urlencoded\s*\(\s*\{\s*extended\s*:\s*true',
+        r'express\.urlencoded\s*\(\s*\{\s*extended\s*:\s*true',
+    ],
+    severity=Severity.HIGH,
+    languages=[".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"],
+    false_positive_patterns=[
+        r'qs\.parse\s*\([^)]+,\s*\{\s*allowPrototypes\s*:\s*false',
+        r'qs\.parse\s*\([^)]+,\s*\{\s*plainObjects\s*:\s*true',
+        r'sanitize',
+        r'//.*qs\.parse',
+    ],
+),
+
+# =============================================================================
+# PROTOTYPE POLLUTION VIA CLONING
+# =============================================================================
+
+VulnerabilityPattern(
+    name="Prototype Pollution - Unsafe Object Cloning",
+    category=VulnCategory.PROTOTYPE_POLLUTION,
+    patterns=[
+        # =====================================================================
+        # JSON CLONE PATTERN (GENERALLY SAFE BUT CHECK CONTEXT)
+        # =====================================================================
+        
+        # JSON parse/stringify with user input (can be safe but flag for review)
+        r'JSON\.parse\s*\(\s*JSON\.stringify\s*\(\s*req\.(body|query|params)',
+        
+        # =====================================================================
+        # UNSAFE CLONE LIBRARIES/METHODS
+        # =====================================================================
+        
+        # clone package
+        r'clone\s*\(\s*req\.(body|query|params)',
+        r'clone\s*\(\s*request\.(args|form|json|data)',
+        
+        # rfdc (really fast deep clone)
+        r'rfdc\s*\(\s*\)\s*\(\s*req\.(body|query|params)',
+        
+        # fast-copy
+        r'copy\s*\(\s*req\.(body|query|params)',
+        r'fastCopy\s*\(\s*req\.(body|query|params)',
+        
+        # class-transformer (can execute constructors)
+        r'plainToClass\s*\([^,]+,\s*req\.(body|query|params)',
+        r'plainToInstance\s*\([^,]+,\s*req\.(body|query|params)',
+        
+        # =====================================================================
+        # RECURSIVE CLONE WITH USER INPUT
+        # =====================================================================
+        
+        r'(?:deepClone|cloneDeep|recursiveClone|cloneRecursive)\s*\(\s*req\.(body|query|params)',
+        r'(?:deepClone|cloneDeep|recursiveClone|cloneRecursive)\s*\(\s*(?:userInput|userData|clientData|payload|data|input)',
+    ],
+    severity=Severity.MEDIUM,
+    languages=[".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"],
+    false_positive_patterns=[
+        r'structuredClone\s*\(',  # Safe browser/Node API
+        r'JSON\.parse\s*\(\s*JSON\.stringify\s*\(\s*\{\s*["\'][a-zA-Z]+["\']\s*:',  # Static object
+        r'sanitize',
+        r'//.*clone',
+    ],
+),
+
+# =============================================================================
+# PROTOTYPE POLLUTION IN LIBRARIES/FRAMEWORKS
+# =============================================================================
+
+VulnerabilityPattern(
+    name="Prototype Pollution - Framework/Library Specific",
+    category=VulnCategory.PROTOTYPE_POLLUTION,
+    patterns=[
+        # =====================================================================
+        # EXPRESS.JS MIDDLEWARE
+        # =====================================================================
+        
+        # body-parser vulnerabilities
+        r'app\.use\s*\(\s*bodyParser\.json\s*\(\s*\{\s*(?:type|strict|limit)',  # Flag for review
+        
+        # =====================================================================
+        # MONGOOSE/MONGODB
+        # =====================================================================
+        
+        # Setting nested paths from user input
+        r'\.set\s*\(\s*req\.(body|query|params)',
+        r'Model\.findByIdAndUpdate\s*\([^,]+,\s*\{\s*\$set\s*:\s*req\.(body|query|params)',
+        r'\.updateOne\s*\([^,]+,\s*\{\s*\$set\s*:\s*req\.(body|query|params)',
+        
+        # =====================================================================
+        # SEQUELIZE
+        # =====================================================================
+        
+        r'\.update\s*\(\s*req\.(body|query|params)\s*,',
+        r'\.create\s*\(\s*req\.(body|query|params)\s*[,\)]',
+        
+        # =====================================================================
+        # GRAPHQL
+        # =====================================================================
+        
+        # GraphQL input types with spread
+        r'\.\.\.args\s*',
+        r'\.\.\.input\s*',
+        r'\{\s*\.\.\.context\.req\.(body|query)',
+        
+        # =====================================================================
+        # VUE.JS
+        # =====================================================================
+        
+        # Vue.set / this.$set
+        r'Vue\.set\s*\(\s*[^,]+,\s*(?:key|prop|path)',
+        r'this\.\$set\s*\(\s*[^,]+,\s*(?:key|prop|path)',
+        
+        # =====================================================================
+        # REACT
+        # =====================================================================
+        
+        # setState with spread of untrusted data
+        r'setState\s*\(\s*\{\s*\.\.\.(?:props|data|input|params)',
+        r'setState\s*\(\s*(?:prev|state)\s*=>\s*\(\s*\{\s*\.\.\.prev\s*,\s*\.\.\.(?:props|data|input)',
+        
+        # =====================================================================
+        # ANGULAR
+        # =====================================================================
+        
+        # Object.assign in components
+        r'Object\.assign\s*\(\s*this\.\w+\s*,\s*(?:data|input|params)',
+    ],
+    severity=Severity.MEDIUM,
+    languages=[".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs", ".vue"],
+    false_positive_patterns=[
+        r'sanitize',
+        r'validate',
+        r'//.*set',
+        r'structuredClone',
+    ],
+),
+
+# =============================================================================
+# PYTHON CLASS POLLUTION (SIMILAR CONCEPT)
+# =============================================================================
+
+VulnerabilityPattern(
+    name="Prototype Pollution - Python Class Pollution",
+    category=VulnCategory.PROTOTYPE_POLLUTION,
+    patterns=[
+        # =====================================================================
+        # __class__ MANIPULATION
+        # =====================================================================
+        
+        r'__class__\s*=',
+        r'\[[\s]*["\']__class__["\'][\s]*\]',
+        r'setattr\s*\([^,]+,\s*["\']__class__["\']',
+        
+        # =====================================================================
+        # __dict__ MANIPULATION
+        # =====================================================================
+        
+        r'__dict__\s*\.\s*update\s*\(\s*(?:request|data|input|payload|params|kwargs)',
+        r'__dict__\s*\[\s*["\'][^"\']+["\']\s*\]\s*=',
+        r'vars\s*\([^)]+\)\s*\.\s*update\s*\(\s*(?:request|data|input)',
+        
+        # =====================================================================
+        # __bases__ MANIPULATION
+        # =====================================================================
+        
+        r'__bases__\s*=',
+        r'\[[\s]*["\']__bases__["\'][\s]*\]',
+        
+        # =====================================================================
+        # __globals__ ACCESS (CODE EXECUTION)
+        # =====================================================================
+        
+        r'__globals__\s*\[',
+        r'\[[\s]*["\']__globals__["\'][\s]*\]',
+        r'func_globals\s*\[',
+        
+        # =====================================================================
+        # UNSAFE **kwargs UNPACKING
+        # =====================================================================
+        
+        r'\*\*\s*request\.(args|form|json|data|values)',
+        r'\*\*\s*(?:data|input|payload|params|kwargs)',
+        r'setattr\s*\(\s*[^,]+,\s*(?:key|attr|name|k)\s*,',  # Dynamic setattr
+        
+        # =====================================================================
+        # RECURSIVE UPDATE WITHOUT FILTERING
+        # =====================================================================
+        
+        r'\.update\s*\(\s*request\.(args|form|json|data)',
+        r'dict\.update\s*\(\s*[^,]+,\s*request\.',
+        
+        # =====================================================================
+        # PYDANTIC/DATACLASS MANIPULATION
+        # =====================================================================
+        
+        r'\.(?:dict|model_dump)\s*\(\s*\)\s*\.\s*update\s*\(\s*(?:request|data|input)',
+        r'\.parse_obj\s*\(\s*request\.(args|form|json|data)',
+        r'\.model_validate\s*\(\s*request\.(args|form|json|data)',
+    ],
+    severity=Severity.HIGH,
+    languages=[".py"],
+    false_positive_patterns=[
+        r'hasattr\s*\([^,]+,\s*["\']__',
+        r'getattr\s*\([^,]+,\s*["\']__[^"\']+["\']\s*,\s*None',
+        r'isinstance\s*\(',
+        r'#.*__class__',
+        r'#.*__dict__',
+        r'pydantic\.',
+        r'@validator',
+        r'@field_validator',
+        r'Schema\s*\(',
+    ],
+),
+
+# =============================================================================
+# SERVER-SIDE PROTOTYPE POLLUTION DETECTION
+# =============================================================================
+
+VulnerabilityPattern(
+    name="Prototype Pollution - Server-Side Gadget Indicators",
+    category=VulnCategory.PROTOTYPE_POLLUTION,
+    patterns=[
+        # =====================================================================
+        # KNOWN GADGETS FOR RCE VIA PROTOTYPE POLLUTION
+        # =====================================================================
+        
+        # child_process (Node.js RCE gadget)
+        r'require\s*\(\s*["\']child_process["\']\s*\)',
+        r'child_process\.\w+\s*\(',
+        r'spawn\s*\(\s*(?:cmd|command|shell)',
+        r'exec\s*\(\s*(?:cmd|command|shell)',
+        
+        # vm module (sandbox escape)
+        r'require\s*\(\s*["\']vm["\']\s*\)',
+        r'vm\.runInContext\s*\(',
+        r'vm\.runInNewContext\s*\(',
+        
+        # EJS template gadget
+        r'ejs\.render\s*\(',
+        r'ejs\.compile\s*\(',
+        r'outputFunctionName',  # EJS PP gadget
+        r'escapeFunction',  # EJS PP gadget
+        r'localsName',  # EJS PP gadget
+        
+        # Pug template gadget
+        r'pug\.render\s*\(',
+        r'pug\.compile\s*\(',
+        
+        # Handlebars gadget
+        r'handlebars\.compile\s*\(',
+        r'Handlebars\.compile\s*\(',
+        
+        # =====================================================================
+        # PROTOTYPE POLLUTION TO XSS
+        # =====================================================================
+        
+        # innerHTML assignment
+        r'\.innerHTML\s*=',
+        r'\.outerHTML\s*=',
+        
+        # DOM manipulation
+        r'document\.write\s*\(',
+        r'document\.writeln\s*\(',
+        
+        # =====================================================================
+        # CONSTRUCTOR POLLUTION LEADING TO RCE
+        # =====================================================================
+        
+        r'\.constructor\s*\(\s*["\']return\s+(?:this|process|require)',
+        r'Function\s*\(\s*["\']return\s+(?:this|process|require)',
+    ],
+    severity=Severity.INFO,  # These are indicators, not direct vulns
+    languages=[".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"],
+    false_positive_patterns=[
+        r'//.*child_process',
+        r'/\*.*child_process',
+        r'sanitize',
+        r'escape',
+    ],
+),
 
             # =========================================================================
             # SQL INJECTION PATTERNS
