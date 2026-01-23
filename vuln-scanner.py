@@ -2592,12 +2592,12 @@ BINARY_PATTERNS = [
     # =========================================================================
     {
         "name": "Hardcoded Connection String",
-        "pattern": r'(Data Source|Server|Initial Catalog|User ID|Password|Integrated Security|Provider|Persist Security Info|Trusted_Connection|Database|Uid|Pwd|DSN|Driver)\s*=',
+        "pattern": r'(Data Source|Server|Initial Catalog|User ID|Password|Integrated Security|Provider|Persist Security Info|Trusted_Connection|Database|Uid|Pwd|DSN|Driver)\s*=[^;]*;',
         "severity": Severity.HIGH
     },
     {
         "name": "Hardcoded Credentials",
-        "pattern": r'(password|passwd|pwd|secret|api[_-]?key|apikey|token|auth[_-]?token|access[_-]?token|bearer|credential|private[_-]?key|encryption[_-]?key|signing[_-]?key|jwt[_-]?secret|session[_-]?secret|master[_-]?key)\s*[=:]\s*["\'][^"\']{4,}["\']',
+        "pattern": r'(password|passwd|pwd|secret|api[_-]?key|apikey|token|auth[_-]?token|access[_-]?token|bearer|credential|private[_-]?key|encryption[_-]?key|signing[_-]?key|jwt[_-]?secret|session[_-]?secret|master[_-]?key)\s*[=:]\s*["\'][^"\']{8,}["\']',
         "severity": Severity.HIGH
     },
     {
@@ -2621,7 +2621,7 @@ BINARY_PATTERNS = [
     # =========================================================================
     {
         "name": "AWS Credentials",
-        "pattern": r'(AKIA[0-9A-Z]{16}|ABIA[0-9A-Z]{16}|ACCA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|aws_secret_access_key|aws_access_key_id)',
+        "pattern": r'(AKIA[0-9A-Z]{16}|ABIA[0-9A-Z]{16}|ACCA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|aws_secret_access_key\s*[=:]\s*["\'][^"\']+|aws_access_key_id\s*[=:]\s*["\'][^"\']+)',
         "severity": Severity.CRITICAL
     },
     {
@@ -2631,12 +2631,12 @@ BINARY_PATTERNS = [
     },
     {
         "name": "Azure Credentials",
-        "pattern": r'(AccountKey\s*=|SharedAccessSignature\s*=|DefaultEndpointsProtocol=https;AccountName=|azure[_-]?(client[_-]?id|client[_-]?secret|tenant[_-]?id|subscription[_-]?id))',
+        "pattern": r'(AccountKey\s*=\s*[a-zA-Z0-9+/=]{20,}|SharedAccessSignature\s*=\s*[^\s;]+|DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=)',
         "severity": Severity.CRITICAL
     },
     {
         "name": "GCP Credentials",
-        "pattern": r'("type"\s*:\s*"service_account"|"private_key_id"\s*:|AIza[0-9A-Za-z_-]{35}|GOOG[a-zA-Z0-9_-]{10,})',
+        "pattern": r'("type"\s*:\s*"service_account"|"private_key_id"\s*:\s*"[a-f0-9]+"|AIza[0-9A-Za-z_-]{35})',
         "severity": Severity.CRITICAL
     },
     {
@@ -2646,7 +2646,7 @@ BINARY_PATTERNS = [
     },
     {
         "name": "Heroku API Key",
-        "pattern": r'[hH]eroku[a-zA-Z0-9_-]*[=:]\s*["\']?[a-f0-9-]{36}',
+        "pattern": r'[hH]eroku[_-]?(api[_-]?key|auth[_-]?token)\s*[=:]\s*["\']?[a-f0-9-]{36}',
         "severity": Severity.CRITICAL
     },
     
@@ -2670,12 +2670,12 @@ BINARY_PATTERNS = [
     },
     {
         "name": "PayPal/Braintree",
-        "pattern": r'(access_token\$production\$[a-z0-9]{16}\$[a-f0-9]{32}|paypal[_-]?(client[_-]?id|secret)|braintree[_-]?(merchant|public|private)[_-]?(id|key))',
+        "pattern": r'(access_token\$production\$[a-z0-9]{16}\$[a-f0-9]{32}|paypal[_-]?(client[_-]?secret)\s*[=:]\s*["\'][^"\']+|braintree[_-]?(private)[_-]?key\s*[=:]\s*["\'][^"\']+)',
         "severity": Severity.CRITICAL
     },
     {
-        "name": "Twilio",
-        "pattern": r'(SK[a-f0-9]{32}|AC[a-f0-9]{32}|twilio[_-]?(account[_-]?sid|auth[_-]?token))',
+        "name": "Twilio Credentials",
+        "pattern": r'(twilio[_-]?(account[_-]?sid|auth[_-]?token)\s*[=:]\s*["\'][^"\']+|SK[a-f0-9]{32}(?=\s|"|\'|$))',
         "severity": Severity.CRITICAL
     },
     {
@@ -2690,7 +2690,7 @@ BINARY_PATTERNS = [
     },
     {
         "name": "Slack Token",
-        "pattern": r'(xox[baprs]-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{24}|xox[baprs]-[0-9]{10,}-[a-zA-Z0-9]{24})',
+        "pattern": r'xox[baprs]-[0-9]{10,}-[0-9A-Za-z]{10,}',
         "severity": Severity.CRITICAL
     },
     {
@@ -2700,22 +2700,22 @@ BINARY_PATTERNS = [
     },
     {
         "name": "Discord Token/Webhook",
-        "pattern": r'(https://discord(app)?\.com/api/webhooks/\d+/[a-zA-Z0-9_-]+|[MN][a-zA-Z0-9_-]{23,}\.[a-zA-Z0-9_-]{6}\.[a-zA-Z0-9_-]{27,})',
+        "pattern": r'(https://discord(app)?\.com/api/webhooks/\d{17,}/[a-zA-Z0-9_-]{60,}|[MN][a-zA-Z0-9_-]{23,}\.[a-zA-Z0-9_-]{6}\.[a-zA-Z0-9_-]{27,})',
         "severity": Severity.HIGH
     },
     {
         "name": "Telegram Bot Token",
-        "pattern": r'\d{8,10}:[a-zA-Z0-9_-]{35}',
+        "pattern": r'\d{9,10}:[a-zA-Z0-9_-]{35}',
         "severity": Severity.HIGH
     },
     {
         "name": "Firebase/Google API",
-        "pattern": r'(AIza[0-9A-Za-z_-]{35}|FIREBASE[_-]?(API[_-]?KEY|AUTH[_-]?DOMAIN|PROJECT[_-]?ID))',
+        "pattern": r'AIza[0-9A-Za-z_-]{35}',
         "severity": Severity.HIGH
     },
     {
         "name": "NPM Token",
-        "pattern": r'(npm_[a-zA-Z0-9]{36}|//registry\.npmjs\.org/:_authToken=)',
+        "pattern": r'(npm_[a-zA-Z0-9]{36}|//registry\.npmjs\.org/:_authToken=[a-zA-Z0-9-]+)',
         "severity": Severity.CRITICAL
     },
     {
@@ -2724,23 +2724,23 @@ BINARY_PATTERNS = [
         "severity": Severity.CRITICAL
     },
     {
-        "name": "Docker Registry",
-        "pattern": r'(docker[_-]?(password|auth|token)|DOCKER_AUTH_CONFIG)',
+        "name": "Docker Registry Auth",
+        "pattern": r'(docker[_-]?password\s*[=:]\s*["\'][^"\']+|DOCKER_AUTH_CONFIG\s*=)',
         "severity": Severity.HIGH
     },
     {
         "name": "JWT Token",
-        "pattern": r'eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*',
+        "pattern": r'eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{20,}',
         "severity": Severity.MEDIUM
     },
     {
         "name": "Basic Auth Header",
-        "pattern": r'(Basic\s+[A-Za-z0-9+/=]{20,}|Authorization:\s*Basic\s+)',
+        "pattern": r'Authorization:\s*Basic\s+[A-Za-z0-9+/=]{20,}',
         "severity": Severity.HIGH
     },
     {
-        "name": "Bearer Token",
-        "pattern": r'(Bearer\s+[a-zA-Z0-9_-]{20,}|Authorization:\s*Bearer\s+)',
+        "name": "Bearer Token Header",
+        "pattern": r'Authorization:\s*Bearer\s+[a-zA-Z0-9_-]{20,}',
         "severity": Severity.MEDIUM
     },
     
@@ -2749,17 +2749,17 @@ BINARY_PATTERNS = [
     # =========================================================================
     {
         "name": "SQL Query Pattern",
-        "pattern": r'(SELECT\s+.{1,50}\s+FROM|INSERT\s+INTO\s+\w+|UPDATE\s+\w+\s+SET|DELETE\s+FROM\s+\w+|DROP\s+(TABLE|DATABASE|INDEX)|TRUNCATE\s+TABLE|ALTER\s+TABLE|CREATE\s+(TABLE|DATABASE|INDEX|VIEW|PROCEDURE)|EXEC(UTE)?\s+)',
+        "pattern": r'(SELECT\s+[\w\*,\s]+\s+FROM\s+\w+|INSERT\s+INTO\s+\w+\s*\(|UPDATE\s+\w+\s+SET\s+\w+|DELETE\s+FROM\s+\w+\s+WHERE|DROP\s+(TABLE|DATABASE)\s+\w+|TRUNCATE\s+TABLE\s+\w+)',
         "severity": Severity.MEDIUM
     },
     {
         "name": "Database Connection URI",
-        "pattern": r'(mongodb(\+srv)?://[^\s"\']+|postgres(ql)?://[^\s"\']+|mysql://[^\s"\']+|redis://[^\s"\']+|mssql://[^\s"\']+|oracle://[^\s"\']+|jdbc:[a-z]+://[^\s"\']+)',
+        "pattern": r'(mongodb(\+srv)?://[^"\'\s]+@[^"\'\s]+|postgres(ql)?://[^"\'\s]+@[^"\'\s]+|mysql://[^"\'\s]+@[^"\'\s]+|redis://[^"\'\s]+@[^"\'\s]+|mssql://[^"\'\s]+@[^"\'\s]+|jdbc:[a-z]+://[^"\'\s]+)',
         "severity": Severity.HIGH
     },
     {
         "name": "Database Password in URI",
-        "pattern": r'(mongodb|postgres|mysql|redis|mssql)(\+srv)?://[^:]+:[^@]+@',
+        "pattern": r'(mongodb|postgres|mysql|redis|mssql)(\+srv)?://[^:"\'\s]+:[^@"\'\s]+@[^"\'\s]+',
         "severity": Severity.CRITICAL
     },
     
@@ -2767,38 +2767,43 @@ BINARY_PATTERNS = [
     # DESERIALIZATION (RCE VECTORS)
     # =========================================================================
     {
-        "name": "Deserialization - .NET",
-        "pattern": r'(BinaryFormatter|ObjectStateFormatter|NetDataContractSerializer|LosFormatter|SoapFormatter|DataContractSerializer|XmlSerializer|JavaScriptSerializer|JsonConvert\.DeserializeObject|TypeNameHandling|XamlReader|XamlServices|ObjectDataProvider|ResourceReader|ResXResourceReader|ActivitySurrogateSelector)',
-        "severity": Severity.HIGH
+        "name": "Deserialization - .NET Critical",
+        "pattern": r'(BinaryFormatter|ObjectStateFormatter|NetDataContractSerializer|LosFormatter|SoapFormatter|TypeNameHandling\.(All|Auto|Objects|Arrays)|XamlReader\.Load|ObjectDataProvider|ActivitySurrogateSelector)',
+        "severity": Severity.CRITICAL
+    },
+    {
+        "name": "Deserialization - .NET Review",
+        "pattern": r'(DataContractSerializer|XmlSerializer|JavaScriptSerializer|JsonConvert\.DeserializeObject)',
+        "severity": Severity.MEDIUM
     },
     {
         "name": "Deserialization - Java",
-        "pattern": r'(ObjectInputStream|XMLDecoder|XStream|SnakeYAML|JsonParser|ObjectMapper\.enableDefaultTyping|readObject\(|readUnshared\(|Yaml\.load|yaml\.unsafe_load|Kryo|Hessian2Input|BurlapInput|Castor)',
+        "pattern": r'(ObjectInputStream|XMLDecoder|XStream|ObjectMapper\.enableDefaultTyping|readObject\s*\(|readUnshared\s*\(|Yaml\.load\s*\(|yaml\.unsafe_load|Kryo|Hessian2Input)',
         "severity": Severity.HIGH
     },
     {
         "name": "Deserialization - PHP",
-        "pattern": r'(unserialize\s*\(|__wakeup|__destruct|PharData|phar://)',
+        "pattern": r'(unserialize\s*\(\s*\$|__wakeup\s*\(|phar://)',
         "severity": Severity.HIGH
     },
     {
         "name": "Deserialization - Python",
-        "pattern": r'(pickle\.loads?|cPickle\.loads?|_pickle\.loads?|dill\.loads?|shelve\.open|marshal\.loads?|yaml\.load|yaml\.unsafe_load|jsonpickle)',
+        "pattern": r'(pickle\.loads?\s*\(|cPickle\.loads?\s*\(|marshal\.loads?\s*\(|yaml\.load\s*\([^)]*Loader\s*=\s*yaml\.(?:Unsafe|Full)Loader|yaml\.unsafe_load)',
         "severity": Severity.HIGH
     },
     {
         "name": "Deserialization - Ruby",
-        "pattern": r'(Marshal\.load|YAML\.load|Psych\.load|Oj\.load)',
+        "pattern": r'(Marshal\.load\s*\(|YAML\.load\s*\([^)]*permitted)',
         "severity": Severity.HIGH
     },
     {
         "name": "Deserialization - Node.js",
-        "pattern": r'(node-serialize|serialize-javascript|cryo|funcster)',
+        "pattern": r'(node-serialize|serialize-javascript|cryo\.parse|funcster)',
         "severity": Severity.HIGH
     },
     {
         "name": "Deserialization Magic Bytes",
-        "pattern": r'(aced0005|rO0AB|H4sIA|YTo[0-9]|Tz[0-9]+:|O:[0-9]+:")',
+        "pattern": r'(aced0005[0-9a-f]{10,}|rO0AB[A-Za-z0-9+/]{20,}|O:[0-9]+:"[a-zA-Z])',
         "severity": Severity.HIGH
     },
     
@@ -2807,37 +2812,37 @@ BINARY_PATTERNS = [
     # =========================================================================
     {
         "name": "Weak Hash - MD5",
-        "pattern": r'(MD5CryptoServiceProvider|MD5\.Create|hashlib\.md5|MessageDigest\.getInstance\s*\(\s*["\']MD5|md5\s*\(|MD5_CTX|CC_MD5)',
+        "pattern": r'(MD5CryptoServiceProvider|MD5\.Create\s*\(|hashlib\.md5\s*\(|MessageDigest\.getInstance\s*\(\s*["\']MD5["\'])',
         "severity": Severity.MEDIUM
     },
     {
         "name": "Weak Hash - SHA1",
-        "pattern": r'(SHA1CryptoServiceProvider|SHA1\.Create|hashlib\.sha1|MessageDigest\.getInstance\s*\(\s*["\']SHA-?1|sha1\s*\(|SHA_CTX|CC_SHA1)',
+        "pattern": r'(SHA1CryptoServiceProvider|SHA1\.Create\s*\(|hashlib\.sha1\s*\(|MessageDigest\.getInstance\s*\(\s*["\']SHA-?1["\'])',
         "severity": Severity.MEDIUM
     },
     {
         "name": "Weak Encryption - DES/3DES",
-        "pattern": r'(DESCryptoServiceProvider|TripleDESCryptoServiceProvider|DES\.Create|TripleDES\.Create|DES/|DESede|Cipher\.getInstance\s*\(\s*["\']DES)',
+        "pattern": r'(DESCryptoServiceProvider|TripleDESCryptoServiceProvider|DES\.Create\s*\(|Cipher\.getInstance\s*\(\s*["\']DES)',
         "severity": Severity.MEDIUM
     },
     {
         "name": "Weak Encryption - RC4",
-        "pattern": r'(RC4|ARCFOUR|Cipher\.getInstance\s*\(\s*["\']RC4)',
+        "pattern": r'Cipher\.getInstance\s*\(\s*["\']RC4',
         "severity": Severity.MEDIUM
     },
     {
         "name": "Weak Encryption Mode - ECB",
-        "pattern": r'(CipherMode\.ECB|/ECB/|AES/ECB|DES/ECB|Cipher\.getInstance\s*\(\s*["\'][^"\']+/ECB)',
+        "pattern": r'(CipherMode\.ECB|Cipher\.getInstance\s*\(\s*["\'][^"\']+/ECB/)',
         "severity": Severity.MEDIUM
     },
     {
-        "name": "Insecure Random",
-        "pattern": r'(Math\.random\s*\(|Random\s*\(\s*\)|random\.random\s*\(|rand\s*\(|srand\s*\(|mt_rand|lcg_value)',
+        "name": "Insecure Random for Crypto",
+        "pattern": r'(new\s+Random\s*\(\s*\)\.Next|Math\.random\s*\(\s*\)\s*\*|rand\s*\(\s*\)\s*%)',
         "severity": Severity.MEDIUM
     },
     {
         "name": "Hardcoded IV/Nonce",
-        "pattern": r'(IV\s*=\s*["\'][^"\']{16,}["\']|nonce\s*=\s*["\'][^"\']+["\']|InitializationVector)',
+        "pattern": r'(IV\s*=\s*new\s+byte\s*\[\s*\]\s*\{|IV\s*=\s*["\'][0-9a-fA-F]{16,}["\']|nonce\s*=\s*["\'][^"\']{8,}["\'])',
         "severity": Severity.MEDIUM
     },
     
@@ -2846,47 +2851,47 @@ BINARY_PATTERNS = [
     # =========================================================================
     {
         "name": "Process Execution - .NET",
-        "pattern": r'(Process\.Start|ProcessStartInfo|System\.Diagnostics\.Process)',
+        "pattern": r'(Process\.Start\s*\(|new\s+ProcessStartInfo\s*\(|System\.Diagnostics\.Process\.Start)',
         "severity": Severity.HIGH
     },
     {
         "name": "Process Execution - Java",
-        "pattern": r'(Runtime\.getRuntime\(\)\.exec|ProcessBuilder|ProcessImpl)',
+        "pattern": r'(Runtime\.getRuntime\s*\(\s*\)\.exec\s*\(|new\s+ProcessBuilder\s*\()',
         "severity": Severity.HIGH
     },
     {
         "name": "Process Execution - Python",
-        "pattern": r'(subprocess\.(run|call|Popen|check_output)|os\.(system|popen|exec|spawn)|commands\.getoutput)',
+        "pattern": r'(subprocess\.(run|call|Popen|check_output)\s*\(|os\.(system|popen|exec\w*|spawn\w*)\s*\()',
         "severity": Severity.HIGH
     },
     {
         "name": "Process Execution - PHP",
-        "pattern": r'(exec\s*\(|shell_exec|system\s*\(|passthru|popen\s*\(|proc_open|pcntl_exec|backtick operator)',
+        "pattern": r'(exec\s*\(\s*\$|shell_exec\s*\(\s*\$|system\s*\(\s*\$|passthru\s*\(\s*\$|popen\s*\(\s*\$|proc_open\s*\()',
         "severity": Severity.HIGH
     },
     {
         "name": "Process Execution - Node.js",
-        "pattern": r'(child_process|exec\s*\(|execSync|execFile|spawn|spawnSync|fork\s*\()',
+        "pattern": r'(child_process\.(exec|execSync|spawn|spawnSync|execFile)\s*\(|require\s*\(\s*["\']child_process["\'])',
         "severity": Severity.HIGH
     },
     {
         "name": "Process Execution - Ruby",
-        "pattern": r'(Kernel\.system|Kernel\.exec|Kernel\.\`|%x\{|IO\.popen|Open3|Shellwords)',
+        "pattern": r'(Kernel\.system\s*\(|Kernel\.exec\s*\(|IO\.popen\s*\(|Open3\.(capture|popen))',
         "severity": Severity.HIGH
     },
     {
         "name": "Process Execution - Go",
-        "pattern": r'(exec\.Command|os/exec|syscall\.Exec)',
+        "pattern": r'(exec\.Command\s*\(|exec\.CommandContext\s*\()',
         "severity": Severity.HIGH
     },
     {
         "name": "PowerShell Execution",
-        "pattern": r'(PowerShell|AddScript|AddCommand|Runspace|System\.Management\.Automation|Invoke-Expression|IEX\s|New-Object\s+.*Net\.WebClient|DownloadString|EncodedCommand|-enc\s+-)',
+        "pattern": r'(System\.Management\.Automation|AddScript\s*\(|Invoke-Expression|IEX\s*\(|DownloadString\s*\(|EncodedCommand)',
         "severity": Severity.HIGH
     },
     {
         "name": "Shell References",
-        "pattern": r'(cmd\.exe|/bin/sh|/bin/bash|/bin/zsh|/bin/ksh|powershell\.exe|pwsh|command\.com|sh\s+-c|bash\s+-c)',
+        "pattern": r'(cmd\.exe\s+/c|/bin/(sh|bash|zsh)\s+-c|powershell\.exe\s+-)',
         "severity": Severity.MEDIUM
     },
     
@@ -2895,32 +2900,32 @@ BINARY_PATTERNS = [
     # =========================================================================
     {
         "name": "Eval/Dynamic Code - JavaScript",
-        "pattern": r'(\beval\s*\(|\bFunction\s*\(|setTimeout\s*\(\s*["\']|setInterval\s*\(\s*["\']|new\s+Function\s*\()',
+        "pattern": r'(\beval\s*\(\s*[^)]+\)|new\s+Function\s*\(\s*[^)]+\)|setTimeout\s*\(\s*["\'][^"\']+["\']|setInterval\s*\(\s*["\'][^"\']+["\'])',
         "severity": Severity.HIGH
     },
     {
         "name": "Eval/Dynamic Code - Python",
-        "pattern": r'(\beval\s*\(|\bexec\s*\(|compile\s*\(|__import__\s*\()',
+        "pattern": r'(\beval\s*\(\s*[^)]+\)|\bexec\s*\(\s*[^)]+\)|compile\s*\(\s*[^)]+,\s*[^)]+,\s*["\']exec["\'])',
         "severity": Severity.HIGH
     },
     {
         "name": "Eval/Dynamic Code - PHP",
-        "pattern": r'(\beval\s*\(|assert\s*\(|create_function|preg_replace\s*\([^,]*["\']/[^/]*e[^/]*["\']|call_user_func|call_user_func_array)',
+        "pattern": r'(\beval\s*\(\s*\$|assert\s*\(\s*\$|create_function\s*\(|preg_replace\s*\([^)]*["\']/[^/]*e[imsuxADSUXJ]*["\'])',
         "severity": Severity.HIGH
     },
     {
         "name": "Eval/Dynamic Code - Ruby",
-        "pattern": r'(\beval\s*\(|instance_eval|class_eval|module_eval|Kernel\.eval|binding\.eval)',
+        "pattern": r'(\beval\s*\(\s*[^)]+\)|instance_eval\s*\(|class_eval\s*\(|module_eval\s*\()',
         "severity": Severity.HIGH
     },
     {
         "name": "Script Engine - Java",
-        "pattern": r'(ScriptEngine|ScriptEngineManager|Nashorn|GraalJS|javax\.script|Bindings\.put)',
+        "pattern": r'(ScriptEngineManager\s*\(\s*\)\.getEngineByName|ScriptEngine\.eval\s*\(|javax\.script\.ScriptEngine)',
         "severity": Severity.HIGH
     },
     {
         "name": "Expression Language",
-        "pattern": r'(ExpressionFactory|ELProcessor|SpelExpressionParser|parseExpression|StandardEvaluationContext|ValueExpression|MethodExpression)',
+        "pattern": r'(SpelExpressionParser\s*\(\s*\)\.parseExpression|ELProcessor\.eval|ExpressionFactory\.createValueExpression)',
         "severity": Severity.HIGH
     },
     
@@ -2928,28 +2933,28 @@ BINARY_PATTERNS = [
     # REFLECTION & DYNAMIC LOADING
     # =========================================================================
     {
-        "name": "Reflection - .NET",
-        "pattern": r'(GetMethod|InvokeMember|MethodInfo|Type\.GetType|CreateDelegate|DynamicInvoke|Activator\.CreateInstance|Assembly\.Load|Assembly\.LoadFrom|Assembly\.LoadFile|Assembly\.LoadWithPartialName)',
+        "name": "Reflection - .NET Dynamic Invoke",
+        "pattern": r'(\.GetMethod\s*\([^)]+\)\.Invoke|Type\.GetType\s*\([^)]+\)\.GetMethod|Activator\.CreateInstance\s*\(|Assembly\.Load(From|File)?\s*\()',
         "severity": Severity.MEDIUM
     },
     {
         "name": "Reflection - Java",
-        "pattern": r'(Class\.forName|getMethod|getDeclaredMethod|invoke\s*\(|getConstructor|newInstance|setAccessible|java\.lang\.reflect)',
+        "pattern": r'(Class\.forName\s*\([^)]+\)\.getMethod|\.getMethod\s*\([^)]+\)\.invoke|setAccessible\s*\(\s*true\s*\))',
         "severity": Severity.MEDIUM
     },
     {
         "name": "Dynamic Compilation - .NET",
-        "pattern": r'(CSharpCodeProvider|VBCodeProvider|CompileAssemblyFromSource|CodeDomProvider|Roslyn\.Compil|Microsoft\.CodeAnalysis)',
+        "pattern": r'(CSharpCodeProvider\s*\(\s*\)|CompileAssemblyFromSource|Microsoft\.CodeAnalysis\.CSharp\.CSharpCompilation)',
         "severity": Severity.HIGH
     },
     {
         "name": "Dynamic Compilation - Java",
-        "pattern": r'(JavaCompiler|ToolProvider\.getSystemJavaCompiler|javax\.tools|Janino|BeanShell|Groovy)',
+        "pattern": r'(ToolProvider\.getSystemJavaCompiler|JavaCompiler\.getTask|javax\.tools\.JavaCompiler)',
         "severity": Severity.HIGH
     },
     {
         "name": "Class Loading - Java",
-        "pattern": r'(URLClassLoader|defineClass|ClassLoader\.loadClass|Thread\.currentThread\(\)\.getContextClassLoader)',
+        "pattern": r'(URLClassLoader\s*\(|defineClass\s*\(|ClassLoader\.loadClass\s*\()',
         "severity": Severity.HIGH
     },
     
@@ -2958,32 +2963,27 @@ BINARY_PATTERNS = [
     # =========================================================================
     {
         "name": "JNDI Lookup (Log4Shell)",
-        "pattern": r'(InitialContext|Context\.lookup|javax\.naming|jndi:|ldap://|rmi://|\$\{jndi:)',
+        "pattern": r'(\$\{jndi:(ldap|rmi|dns)://|InitialContext\s*\(\s*\)\.lookup\s*\(|Context\.lookup\s*\([^)]*\$)',
         "severity": Severity.CRITICAL
     },
     {
-        "name": "LDAP Injection",
-        "pattern": r'(DirectorySearcher|SearchRequest|LdapConnection|ldap_search|ldap_bind|ou=|cn=|dc=)',
+        "name": "LDAP Query",
+        "pattern": r'(DirectorySearcher\s*\([^)]*\$|SearchRequest\s*\([^)]*\$|ldap_search\s*\([^)]*\$)',
         "severity": Severity.MEDIUM
     },
     {
-        "name": "XPath Injection",
-        "pattern": r'(XPathExpression|XPathNavigator|SelectNodes|SelectSingleNode|XPath\.compile|xpath\.evaluate)',
+        "name": "XPath Query",
+        "pattern": r'(XPathExpression\.compile\s*\([^)]*\$|SelectNodes\s*\([^)]*\$|SelectSingleNode\s*\([^)]*\$)',
         "severity": Severity.MEDIUM
     },
     {
         "name": "XML External Entity (XXE)",
-        "pattern": r'(<!ENTITY|SYSTEM\s+["\']file:|PUBLIC\s+["\']|DTDConfiguration|DocumentBuilderFactory|SAXParserFactory|XMLReader|XmlTextReader|XmlReader\.Create|XmlDocument\.Load)',
+        "pattern": r'(<!ENTITY\s+\w+\s+SYSTEM|XmlReaderSettings\s*\{[^}]*DtdProcessing\s*=\s*DtdProcessing\.Parse|DocumentBuilderFactory[^;]*setFeature\s*\([^)]*false)',
         "severity": Severity.HIGH
     },
     {
-        "name": "Template Injection Indicators",
-        "pattern": r'(\{\{.*\}\}|\{%.*%\}|<%.*%>|\$\{.*\}|#\{.*\})',
-        "severity": Severity.MEDIUM
-    },
-    {
         "name": "Prototype Pollution",
-        "pattern": r'(__proto__|constructor\s*\[|Object\.assign\s*\(\s*\{\}|\.prototype\s*=|prototype\s*\[)',
+        "pattern": r'(__proto__\s*[=\[]|constructor\s*\[\s*["\']prototype|Object\.assign\s*\(\s*\{\s*\}\s*,\s*[^)]*req\.)',
         "severity": Severity.HIGH
     },
     
@@ -2991,18 +2991,23 @@ BINARY_PATTERNS = [
     # FILE OPERATIONS
     # =========================================================================
     {
-        "name": "File Operations",
-        "pattern": r'(FileStream|StreamReader|StreamWriter|File\.Open|File\.Read|File\.Write|File\.Delete|Directory\.Delete|fopen|fread|fwrite|file_get_contents|file_put_contents|readfile|include\s*\(|require\s*\(|include_once|require_once)',
+        "name": "File Read Operations",
+        "pattern": r'(File\.ReadAll(Text|Bytes|Lines)\s*\(|StreamReader\s*\([^)]*\$|file_get_contents\s*\(\s*\$|fs\.readFile(Sync)?\s*\([^)]*req\.)',
+        "severity": Severity.MEDIUM
+    },
+    {
+        "name": "File Write Operations",
+        "pattern": r'(File\.Write(All)?(Text|Bytes|Lines)\s*\(|StreamWriter\s*\([^)]*\$|file_put_contents\s*\(\s*\$|fs\.writeFile(Sync)?\s*\([^)]*req\.)',
         "severity": Severity.MEDIUM
     },
     {
         "name": "Path Traversal Indicators",
-        "pattern": r'(\.\./|\.\.\x5c|%2e%2e%2f|%2e%2e/|\.\.%2f|%2e%2e%5c|path\.join|Path\.Combine)',
+        "pattern": r'(\.\.[/\\]|\.\./|\.\.%2[fF]|%2e%2e%2f|%252e%252e%252f)',
         "severity": Severity.HIGH
     },
     {
-        "name": "Archive/Zip Operations",
-        "pattern": r'(ZipFile|ZipArchive|TarArchive|GzipStream|ZipInputStream|ZipEntry|extractall|unzip|tar\s+-)',
+        "name": "Archive Extraction",
+        "pattern": r'(ZipFile\.ExtractToDirectory|ZipArchive\.ExtractToDirectory|extractall\s*\(|tar\s+-x)',
         "severity": Severity.MEDIUM
     },
     
@@ -3010,13 +3015,13 @@ BINARY_PATTERNS = [
     # NETWORK & SSRF
     # =========================================================================
     {
-        "name": "URL/Endpoint",
-        "pattern": r'https?://[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/[a-zA-Z0-9./_?&=-]*)?',
+        "name": "External URL",
+        "pattern": r'https?://(?!localhost|127\.0\.0\.1|0\.0\.0\.0)[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}[^\s"\']*',
         "severity": Severity.INFO
     },
     {
-        "name": "Internal Network",
-        "pattern": r'(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2[0-9]|3[01])\.\d+\.\d+|127\.0\.0\.1|localhost|0\.0\.0\.0)',
+        "name": "Internal Network Access",
+        "pattern": r'(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3})(?::\d+)?[/\w]*',
         "severity": Severity.MEDIUM
     },
     {
@@ -3025,124 +3030,113 @@ BINARY_PATTERNS = [
         "severity": Severity.HIGH
     },
     {
-        "name": "HTTP Client",
-        "pattern": r'(HttpClient|WebClient|WebRequest|HttpWebRequest|RestSharp|Flurl|HttpURLConnection|OkHttp|Retrofit|axios|fetch\s*\(|requests\.(get|post)|urllib|aiohttp|httpx)',
-        "severity": Severity.INFO
-    },
-    {
-        "name": "Socket Operations",
-        "pattern": r'(Socket|TcpClient|UdpClient|ServerSocket|DatagramSocket|socket\.socket|socket\.connect|bind\s*\(|listen\s*\(|accept\s*\()',
-        "severity": Severity.MEDIUM
+        "name": "SSRF Indicators",
+        "pattern": r'(HttpClient\.GetAsync\s*\([^)]*\$|WebRequest\.Create\s*\([^)]*\$|requests\.(get|post)\s*\([^)]*request\.|fetch\s*\([^)]*req\.)',
+        "severity": Severity.HIGH
     },
     
     # =========================================================================
     # AUTHENTICATION & SESSION
     # =========================================================================
     {
-        "name": "Hardcoded User/Admin",
-        "pattern": r'(admin|root|superuser|administrator)\s*[=:]\s*["\'][^"\']+["\']',
+        "name": "Hardcoded Admin Credentials",
+        "pattern": r'(admin|root|administrator)\s*[=:]\s*["\'][^"\']{4,}["\']',
+        "severity": Severity.HIGH
+    },
+    {
+        "name": "Session Fixation Risk",
+        "pattern": r'(session_id\s*\(\s*\$|Session\.SessionID\s*=|req\.session\.id\s*=)',
         "severity": Severity.MEDIUM
     },
     {
-        "name": "Session Handling",
-        "pattern": r'(SessionState|HttpSession|session\[|Session\[|\$_SESSION|session_start|session_id)',
-        "severity": Severity.INFO
-    },
-    {
-        "name": "Cookie Manipulation",
-        "pattern": r'(Response\.Cookies|Request\.Cookies|document\.cookie|HttpCookie|setcookie|set_cookie|Cookie\s*=)',
-        "severity": Severity.INFO
-    },
-    {
-        "name": "OAuth/OIDC",
-        "pattern": r'(client_secret|client_id|redirect_uri|authorization_code|refresh_token|id_token|access_token)',
+        "name": "Insecure Cookie",
+        "pattern": r'(setcookie\s*\([^)]*false\s*\)|Cookie\s*\{[^}]*(Secure|HttpOnly)\s*=\s*false)',
         "severity": Severity.MEDIUM
+    },
+    {
+        "name": "OAuth Secret",
+        "pattern": r'(client_secret\s*[=:]\s*["\'][a-zA-Z0-9_-]{10,}["\'])',
+        "severity": Severity.HIGH
     },
     
     # =========================================================================
     # LOGGING & DEBUG
     # =========================================================================
     {
-        "name": "Debug Mode",
-        "pattern": r'(DEBUG\s*=\s*[Tt]rue|debug\s*:\s*true|IsDebugMode|EnableDebug|FLASK_DEBUG|APP_DEBUG|NODE_ENV\s*[=:]\s*["\']development)',
+        "name": "Debug Mode Enabled",
+        "pattern": r'(DEBUG\s*=\s*[Tt]rue|debug\s*:\s*true|FLASK_DEBUG\s*=\s*1|APP_DEBUG\s*=\s*true|NODE_ENV\s*[=:]\s*["\']development["\'])',
         "severity": Severity.MEDIUM
     },
     {
-        "name": "Verbose Error",
-        "pattern": r'(printStackTrace|traceback\.print|ShowStackTrace|IncludeExceptionDetailInFaults|customErrors\s+mode\s*=\s*["\']Off)',
+        "name": "Stack Trace Exposure",
+        "pattern": r'(printStackTrace\s*\(|customErrors\s+mode\s*=\s*["\']Off|IncludeExceptionDetailInFaults\s*=\s*true)',
         "severity": Severity.MEDIUM
-    },
-    {
-        "name": "Console/Log Output",
-        "pattern": r'(console\.log|System\.out\.print|print\s*\(|Debug\.Log|Log\.d\s*\(|logger\.(debug|info|warn|error))',
-        "severity": Severity.INFO
     },
     
     # =========================================================================
     # MOBILE SPECIFIC
     # =========================================================================
     {
-        "name": "Android Sensitive",
-        "pattern": r'(android\.permission\.(READ_SMS|RECEIVE_SMS|READ_CONTACTS|ACCESS_FINE_LOCATION|CAMERA|RECORD_AUDIO)|getDeviceId|getSubscriberId|getSimSerialNumber)',
+        "name": "Android Sensitive Permissions",
+        "pattern": r'android\.permission\.(READ_SMS|RECEIVE_SMS|READ_CONTACTS|ACCESS_FINE_LOCATION|CAMERA|RECORD_AUDIO|READ_CALL_LOG)',
         "severity": Severity.MEDIUM
     },
     {
-        "name": "iOS Sensitive",
-        "pattern": r'(kSecAttrAccessible|SecItemCopyMatching|SecItemAdd|NSUserDefaults|UIDevice\.current\.identifierForVendor)',
+        "name": "iOS Keychain",
+        "pattern": r'(kSecAttrAccessibleAlways|kSecAttrAccessibleAfterFirstUnlock|SecItemCopyMatching)',
         "severity": Severity.MEDIUM
     },
     {
         "name": "Certificate Pinning Bypass",
-        "pattern": r'(setHostnameVerifier|TrustManager|X509TrustManager|checkClientTrusted|checkServerTrusted|SSLSocketFactory|ALLOW_ALL_HOSTNAME_VERIFIER|trustAllCerts)',
+        "pattern": r'(ALLOW_ALL_HOSTNAME_VERIFIER|trustAllCerts|setHostnameVerifier\s*\(\s*null|checkServerTrusted\s*\([^)]*\)\s*\{\s*\})',
         "severity": Severity.HIGH
     },
     
     # =========================================================================
-    # DANGEROUS IMPORTS/USING
+    # DANGEROUS IMPORTS (INFO ONLY)
     # =========================================================================
     {
-        "name": "Dangerous .NET Namespace",
-        "pattern": r'using\s+(System\.Reflection|System\.Runtime\.InteropServices|System\.Diagnostics|System\.Management|Microsoft\.Win32)',
+        "name": "Dangerous .NET Import",
+        "pattern": r'using\s+(System\.Reflection\.Emit|System\.Runtime\.InteropServices|System\.Diagnostics\.Process)',
         "severity": Severity.INFO
     },
     {
         "name": "Dangerous Java Import",
-        "pattern": r'import\s+(java\.lang\.reflect|java\.lang\.Runtime|java\.io\.ObjectInputStream|javax\.script|org\.apache\.commons\.collections)',
+        "pattern": r'import\s+(java\.lang\.reflect\.\*|java\.lang\.Runtime|java\.io\.ObjectInputStream|javax\.script\.\*)',
         "severity": Severity.INFO
     },
     {
         "name": "Dangerous Python Import",
-        "pattern": r'import\s+(pickle|subprocess|os|ctypes|marshal|builtins|code|codeop)',
+        "pattern": r'^import\s+(pickle|subprocess|ctypes|marshal)$|^from\s+(pickle|subprocess|ctypes|marshal)\s+import',
         "severity": Severity.INFO
     },
+    
+    # =========================================================================
+    # SENSITIVE DATA (Reduced False Positives)
+    # =========================================================================
     {
-        "name": "Hardcoded IP Address",
-        "pattern": r'\b(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b',
+        "name": "Hardcoded IP (Non-Local)",
+        "pattern": r'(?<![0-9])(?!0\.0\.0\.0|127\.0\.0\.1|255\.255\.255\.\d|1\.0\.0\.0|Version[=\s])([1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(?![0-9]|\.0\.0)',
         "severity": Severity.INFO
     },
     {
         "name": "Email Address",
-        "pattern": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
+        "pattern": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(com|org|net|io|edu|gov|co|us|uk|de|fr)',
         "severity": Severity.INFO
     },
     {
-        "name": "Sensitive File Paths",
-        "pattern": r'(/etc/passwd|/etc/shadow|\.htpasswd|web\.config|appsettings\.json|\.env|\.git/config)',
+        "name": "Sensitive File Reference",
+        "pattern": r'(/etc/(passwd|shadow|hosts)|\.htpasswd|web\.config|appsettings\.(json|xml)|\.env(?:\.local)?|\.git/config|id_rsa)',
         "severity": Severity.MEDIUM
     },
     {
-        "name": "Windows Registry",
-        "pattern": r'(HKEY_LOCAL_MACHINE|HKEY_CURRENT_USER|HKLM|HKCU|RegOpenKey|RegSetValue|Registry\.GetValue)',
+        "name": "Windows Registry Access",
+        "pattern": r'(Registry\.(GetValue|SetValue|LocalMachine|CurrentUser)|RegOpenKey(Ex)?|RegSetValue(Ex)?)',
         "severity": Severity.MEDIUM
     },
     {
-        "name": "Base64 Encoded Blob",
-        "pattern": r'[A-Za-z0-9+/]{50,}={0,2}',
-        "severity": Severity.INFO
-    },
-    {
-        "name": "Hex Encoded Blob",
-        "pattern": r'(?:0x)?[0-9a-fA-F]{32,}',
+        "name": "High Entropy String (Potential Secret)",
+        "pattern": r'["\'][a-zA-Z0-9+/]{40,}={0,2}["\']',
         "severity": Severity.INFO
     },
 ]
