@@ -3115,7 +3115,36 @@ BINARY_PATTERNS = [
         "pattern": r'import\s+(pickle|subprocess|os|ctypes|marshal|builtins|code|codeop)',
         "severity": Severity.INFO
     },
-]: "Prototype Pollution", "pattern": r'(__proto__|constructor\[.*prototype)', "severity": Severity.HIGH},
+    {
+        "name": "Hardcoded IP Address",
+        "pattern": r'\b(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b',
+        "severity": Severity.INFO
+    },
+    {
+        "name": "Email Address",
+        "pattern": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
+        "severity": Severity.INFO
+    },
+    {
+        "name": "Sensitive File Paths",
+        "pattern": r'(/etc/passwd|/etc/shadow|\.htpasswd|web\.config|appsettings\.json|\.env|\.git/config)',
+        "severity": Severity.MEDIUM
+    },
+    {
+        "name": "Windows Registry",
+        "pattern": r'(HKEY_LOCAL_MACHINE|HKEY_CURRENT_USER|HKLM|HKCU|RegOpenKey|RegSetValue|Registry\.GetValue)',
+        "severity": Severity.MEDIUM
+    },
+    {
+        "name": "Base64 Encoded Blob",
+        "pattern": r'[A-Za-z0-9+/]{50,}={0,2}',
+        "severity": Severity.INFO
+    },
+    {
+        "name": "Hex Encoded Blob",
+        "pattern": r'(?:0x)?[0-9a-fA-F]{32,}',
+        "severity": Severity.INFO
+    },
 ]
 
 
