@@ -853,7 +853,9 @@ VulnerabilityPattern(
     severity=Severity.CRITICAL,
     languages=[".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"],
     false_positive_patterns=[
-        r'hasOwnProperty\s*\(\s*["\']__proto__["\']',
+                    r'^import\s+',
+                    r'import\s+javax\.naming',
+r'hasOwnProperty\s*\(\s*["\']__proto__["\']',
         r'===\s*["\']__proto__["\']',
         r'!==\s*["\']__proto__["\']',
         r'==\s*["\']__proto__["\']',
@@ -1506,56 +1508,71 @@ VulnerabilityPattern(
     ],
 ),
 
-            # =========================================================================
-            # SQL INJECTION PATTERNS
-            # =========================================================================
+# =========================================================================
+# SQL INJECTION PATTERNS
+# =========================================================================
 
-            VulnerabilityPattern(
-            name="SQL Injection - String Concatenation",
-            category=VulnCategory.SQL_INJECTION,
-            patterns=[
-            # Basic SQL statement concatenation
-            r'["\']SELECT\s+.+\s+FROM\s+.+["\']\s*\+',
-            r'["\']INSERT\s+INTO\s+.+["\']\s*\+',
-            r'["\']UPDATE\s+.+\s+SET\s+.+["\']\s*\+',
-            r'["\']DELETE\s+FROM\s+.+["\']\s*\+',
-            r'["\']DROP\s+.+["\']\s*\+',
+VulnerabilityPattern(
+    name="SQL Injection - String Concatenation",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # Basic SQL statement concatenation (CRITICAL)
+        r'["\']SELECT\s+.+\s+FROM\s+.+["\']\s*\+',
+        r'["\']INSERT\s+INTO\s+.+["\']\s*\+',
+        r'["\']UPDATE\s+.+\s+SET\s+.+["\']\s*\+',
+        r'["\']DELETE\s+FROM\s+.+["\']\s*\+',
+        r'["\']DROP\s+.+["\']\s*\+',
 
-            # WHERE clause concatenation (common injection point)
-            r'["\'].*WHERE\s+.+["\']\s*\+\s*(?!["\']\s*AND\s*["\'])',
-            r'["\'].*AND\s+.+["\']\s*\+',
-            r'["\'].*OR\s+.+["\']\s*\+',
+        # WHERE clause concatenation (common injection point)
+        r'["\'].*WHERE\s+\w+\s*=\s*[\'"]?\s*["\']\s*\+',
+        r'WHERE\s+\w+\s*=\s*[\'"]?\s*["\']\s*\+\s*\w+\s*\+\s*["\']',
+        r'["\'].*AND\s+\w+\s*=\s*["\']\s*\+',
+        r'["\'].*OR\s+\w+\s*=\s*["\']\s*\+',
 
-            # ORDER BY / GROUP BY injection
-            r'["\'].*ORDER\s+BY\s*["\']\s*\+',
-            r'["\'].*GROUP\s+BY\s*["\']\s*\+',
-            r'["\'].*HAVING\s+.+["\']\s*\+',
+        # Variable assignment with SQL + concatenation
+        r'=\s*["\']SELECT\s+.+["\']\s*\+',
+        r'=\s*["\']INSERT\s+.+["\']\s*\+',
+        r'=\s*["\']UPDATE\s+.+["\']\s*\+',
+        r'=\s*["\']DELETE\s+.+["\']\s*\+',
 
-            # LIMIT/OFFSET injection
-            r'["\'].*LIMIT\s*["\']\s*\+',
-            r'["\'].*OFFSET\s*["\']\s*\+',
+        # SQL built with + operator containing user variable
+        r'["\']\s*\+\s*\w+\s*\+\s*["\']',
 
-            # Table/Column name injection
-            r'["\']SELECT\s+["\']\s*\+\s*\w+\s*\+\s*["\']',
-            r'["\']FROM\s+["\']\s*\+',
-            r'["\']INTO\s+["\']\s*\+',
+        # ORDER BY / GROUP BY / LIMIT injection
+        r'["\'].*ORDER\s+BY\s*["\']\s*\+',
+        r'["\'].*GROUP\s+BY\s*["\']\s*\+',
+        r'["\'].*HAVING\s+.+["\']\s*\+',
+        r'["\'].*LIMIT\s*["\']\s*\+',
+        r'["\'].*OFFSET\s*["\']\s*\+',
 
-            # Execute methods with concatenation
-            r'executeQuery\s*\(\s*["\'].*\+',
-            r'executeUpdate\s*\(\s*["\'].*\+',
-            r'executeSql\s*\(\s*["\'].*\+',
-            r'execute\s*\(\s*["\'].*SELECT.*\+',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".js", ".ts", ".jsx", ".tsx", ".py", ".php", ".java", ".cs", ".rb", ".go", ".kt"],
+        # Table/Column name injection
+        r'["\']SELECT\s+["\']\s*\+\s*\w+\s*\+\s*["\']',
+        r'["\']FROM\s+["\']\s*\+',
+        r'["\']INTO\s+["\']\s*\+',
+
+        # Execute methods with concatenation
+        r'executeQuery\s*\(\s*["\'].*\+',
+        r'executeUpdate\s*\(\s*["\'].*\+',
+        r'executeSql\s*\(\s*["\'].*\+',
+        r'execute\s*\(\s*["\'].*SELECT.*\+',
+    ],
+    severity=Severity.CRITICAL,
+    languages=[".js", ".ts", ".jsx", ".tsx", ".py", ".php", ".java", ".cs", ".rb", ".go", ".kt"],
     false_positive_patterns=[
-            r'//.*SELECT',
-            r'#.*SELECT',
-            r'PreparedStatement',
-            r'\+\s*["\']["\']',           # Empty string concat
-            r'\+\s*["\'][\s,)]+["\']',    # Whitespace/punctuation only
-        ],
-    ),
+        r'//.*SELECT',
+        r'#.*SELECT',
+        r'/\*.*SELECT',
+        r'PreparedStatement',
+        r'prepareStatement',
+        r'\+\s*["\']["\']',
+        r'\+\s*["\'][\s,)]+["\']',
+        r'\?\s*[,\)]',
+        r'setString\s*\(',
+        r'setInt\s*\(',
+        r'setLong\s*\(',
+        r'setParameter\s*\(',
+    ],
+),
 
 VulnerabilityPattern(
     name="SQL Injection - Template Literals/F-strings",
@@ -1566,34 +1583,36 @@ VulnerabilityPattern(
         r'`INSERT\s+INTO\s+.+\$\{',
         r'`UPDATE\s+.+\s+SET\s+.+\$\{',
         r'`DELETE\s+FROM\s+.+\$\{',
-        r'`.*WHERE\s+.+\$\{',
+        r'`.*WHERE\s+.+=\s*\$\{',
         r'`.*ORDER\s+BY\s+\$\{',
         r'`.*LIMIT\s+\$\{',
 
         # Python f-strings
-        r'f["\']SELECT\s+.+\{',
-        r'f["\']INSERT\s+.+\{',
-        r'f["\']UPDATE\s+.+\{',
-        r'f["\']DELETE\s+.+\{',
-        r'f["\'].*WHERE\s+.+\{',
-        r'f["\'].*ORDER\s+BY\s+\{',
+        r'f["\']SELECT\s+.+\s+FROM\s+.+\{',
+        r'f["\']INSERT\s+INTO\s+.+\{',
+        r'f["\']UPDATE\s+.+\s+SET\s+.+\{',
+        r'f["\']DELETE\s+FROM\s+.+\{',
+        r'f["\'].*WHERE\s+.+=\s*.*\{',
+        r'f["\'].*ORDER\s+BY\s+.*\{',
 
         # C# interpolated strings
-        r'\$"SELECT\s+.+\{',
-        r'\$"INSERT\s+.+\{',
-        r'\$"UPDATE\s+.+\{',
-        r'\$"DELETE\s+.+\{',
-        r'\$".*WHERE\s+.+\{',
+        r'\$"SELECT\s+.+\s+FROM\s+.+\{',
+        r'\$"INSERT\s+INTO\s+.+\{',
+        r'\$"UPDATE\s+.+\s+SET\s+.+\{',
+        r'\$"DELETE\s+FROM\s+.+\{',
+        r'\$".*WHERE\s+.+=\s*\{',
 
         # Ruby string interpolation
-        r'["\']SELECT\s+.+#\{',
-        r'["\'].*WHERE\s+.+#\{',
+        r'["\']SELECT\s+.+\s+FROM\s+.+#\{',
+        r'["\'].*WHERE\s+.+=\s*.*#\{',
     ],
     severity=Severity.CRITICAL,
     languages=[".js", ".ts", ".jsx", ".tsx", ".py", ".cs", ".rb"],
-        false_positive_patterns=[
-        r'\{[\d:,]+\}',               # Format specifiers like {0}, {:d}
-        r'\{\s*\?\s*\}',              # Placeholder pattern
+    false_positive_patterns=[
+        r'\{[\d:,]+\}',
+        r'\{\s*\?\s*\}',
+        r'\$\d+',
+        r'@\w+',
     ],
 ),
 
@@ -1602,32 +1621,30 @@ VulnerabilityPattern(
     category=VulnCategory.SQL_INJECTION,
     patterns=[
         # Python % formatting
-        r'["\']SELECT\s+.+["\'].*%\s*\(',
-        r'["\'].*WHERE\s+.+%s.*["\'].*%\s*\(',
+        r'["\']SELECT\s+.+\s+FROM\s+.+%s.*["\'].*%\s*[\(\[]',
+        r'["\'].*WHERE\s+.+%s.*["\'].*%\s*[\(\[]',
         r'["\']SELECT\s+.+["\']\.format\s*\(',
         r'["\'].*WHERE\s+.+["\']\.format\s*\(',
 
         # C# String.Format
-        r'String\.Format\s*\(\s*["\']SELECT',
-        r'string\.Format\s*\(\s*["\']SELECT',
-        r'String\.Format\s*\(\s*["\'].*WHERE',
+        r'String\.Format\s*\(\s*["\']SELECT\s+.+\{0',
+        r'string\.Format\s*\(\s*["\']SELECT\s+.+\{0',
+        r'String\.Format\s*\(\s*["\'].*WHERE\s+.+\{0',
 
         # Go fmt.Sprintf
-        r'fmt\.Sprintf\s*\(\s*["\']SELECT',
-        r'fmt\.Sprintf\s*\(\s*["\'].*WHERE',
-        r'fmt\.Sprintf\s*\(\s*`SELECT',
-
-        # C sprintf
-        r'sprintf\s*\(\s*\w+,\s*["\']SELECT',
-        r'snprintf\s*\(\s*\w+,\s*\d+,\s*["\']SELECT',
+        r'fmt\.Sprintf\s*\(\s*["\']SELECT\s+.+%',
+        r'fmt\.Sprintf\s*\(\s*["\'].*WHERE\s+.+%',
+        r'fmt\.Sprintf\s*\(\s*`SELECT\s+.+%',
 
         # Java String.format
-        r'String\.format\s*\(\s*["\']SELECT',
+        r'String\.format\s*\(\s*["\']SELECT\s+.+%',
+        r'String\.format\s*\(\s*["\'].*WHERE\s+.+%',
     ],
     severity=Severity.CRITICAL,
     languages=[".py", ".php", ".go", ".cs", ".java", ".c", ".cpp"],
-        false_positive_patterns=[
-        r'%\(\w+\)s',                 # Python named parameters
+    false_positive_patterns=[
+        r'%\(\w+\)s',
+        r':\w+',
     ],
 ),
 
@@ -1635,52 +1652,51 @@ VulnerabilityPattern(
     name="SQL Injection - Raw Query Methods",
     category=VulnCategory.SQL_INJECTION,
     patterns=[
-        # Node.js ORMs
-        r'\.raw\s*\(\s*["\'].*\+',
-        r'\.raw\s*\(\s*`[^`]*\$\{',
-        r'sequelize\.query\s*\(\s*["\'].*\+',
-        r'sequelize\.query\s*\(\s*`[^`]*\$\{',
-        r'knex\.raw\s*\(\s*["\'].*\+',
-        r'knex\.raw\s*\(\s*`[^`]*\$\{',
+        # Node.js ORMs with concatenation
+        r'\.raw\s*\(\s*["\']SELECT.+\+',
+        r'\.raw\s*\(\s*`SELECT[^`]*\$\{',
+        r'sequelize\.query\s*\(\s*["\']SELECT.+\+',
+        r'sequelize\.query\s*\(\s*`SELECT[^`]*\$\{',
+        r'knex\.raw\s*\(\s*["\']SELECT.+\+',
+        r'knex\.raw\s*\(\s*`SELECT[^`]*\$\{',
 
-        # Prisma
+        # Prisma unsafe methods
         r'prisma\.\$queryRaw\s*`[^`]*\$\{',
         r'prisma\.\$executeRaw\s*`[^`]*\$\{',
         r'prisma\.\$queryRawUnsafe\s*\(',
         r'prisma\.\$executeRawUnsafe\s*\(',
 
-        # Python SQLAlchemy
-        r'text\s*\(\s*f["\']',
+        # Python SQLAlchemy unsafe
+        r'text\s*\(\s*f["\']SELECT',
+        r'text\s*\(\s*f["\'].*WHERE',
         r'\.execute\s*\(\s*f["\']SELECT',
         r'\.execute\s*\(\s*f["\'].*WHERE',
         r'engine\.execute\s*\(\s*f["\']',
         r'session\.execute\s*\(\s*f["\']',
-        r'connection\.execute\s*\(\s*f["\']',
 
-        # Django
-        r'\.extra\s*\(\s*where\s*=',
-        r'\.extra\s*\(\s*select\s*=',
+        # Django unsafe
+        r'\.extra\s*\(\s*where\s*=\s*\[',
+        r'\.extra\s*\(\s*select\s*=\s*\{',
         r'RawSQL\s*\(\s*f["\']',
         r'cursor\.execute\s*\(\s*f["\']',
 
-        # Ruby ActiveRecord
+        # Ruby ActiveRecord unsafe
         r'\.find_by_sql\s*\(\s*["\'].*#\{',
         r'\.execute\s*\(\s*["\'].*#\{',
         r'\.select_all\s*\(\s*["\'].*#\{',
 
-        # C# Entity Framework
-        r'FromSqlRaw\s*\(\s*\$"',
+        # C# Entity Framework unsafe
+        r'FromSqlRaw\s*\(\s*\$"SELECT',
         r'ExecuteSqlRaw\s*\(\s*\$"',
-        r'SqlQuery\s*\(\s*\$"',
-        r'ExecuteSqlCommand\s*\(\s*\$"',
+        r'SqlQuery\s*\(\s*\$"SELECT',
     ],
     severity=Severity.CRITICAL,
     languages=[".js", ".ts", ".py", ".cs", ".rb"],
-        false_positive_patterns=[
-        r'\?\s*[,\)]',                # Positional placeholders
-        r'\$\d+',                     # PostgreSQL positional params
-        r':\w+',                      # Named parameters
-        r'@\w+',                      # SQL Server parameters
+    false_positive_patterns=[
+        r'\?\s*[,\)]',
+        r'\$\d+',
+        r':\w+',
+        r'@\w+',
         r'bindparams',
         r'\.bind\s*\(',
     ],
@@ -1691,36 +1707,36 @@ VulnerabilityPattern(
     category=VulnCategory.SQL_INJECTION,
     patterns=[
         # Superglobal injection
-        r'["\']SELECT\s+.+\$_(GET|POST|REQUEST|COOKIE|SERVER)',
-        r'["\']INSERT\s+.+\$_(GET|POST|REQUEST|COOKIE)',
+        r'["\']SELECT\s+.+\$_(GET|POST|REQUEST|COOKIE)',
+        r'["\']INSERT\s+INTO\s+.+\$_(GET|POST|REQUEST|COOKIE)',
         r'["\']UPDATE\s+.+\$_(GET|POST|REQUEST|COOKIE)',
-        r'["\']DELETE\s+.+\$_(GET|POST|REQUEST|COOKIE)',
+        r'["\']DELETE\s+FROM\s+.+\$_(GET|POST|REQUEST|COOKIE)',
         r'["\'].*WHERE\s+.+\$_(GET|POST|REQUEST|COOKIE)',
 
         # Variable concatenation
-        r'["\']SELECT\s+.+["\']\s*\.\s*\$(?!pdo)',
-        r'["\'].*WHERE\s+.+["\']\s*\.\s*\$(?!pdo)',
+        r'["\']SELECT\s+.+["\']\s*\.\s*\$\w+',
+        r'["\'].*WHERE\s+.+["\']\s*\.\s*\$\w+',
 
-        # Deprecated mysql_* functions (always flag)
-        r'mysql_query\s*\(',
+        # Deprecated mysql_* functions (always dangerous)
+        r'mysql_query\s*\(\s*["\']',
         r'mysql_db_query\s*\(',
         r'mysql_unbuffered_query\s*\(',
 
-        # mysqli without prepared statements
-        r'mysqli_query\s*\(\s*\$\w+,\s*["\'].*\$(?!stmt)',
+        # mysqli/PDO without prepared statements
+        r'mysqli_query\s*\(\s*\$\w+,\s*["\'].*\.\s*\$',
         r'mysqli_multi_query\s*\(\s*\$\w+,\s*["\'].*\$',
-
-        # PDO without prepared statements
-        r'\$pdo->query\s*\(\s*["\'].*\$',
+        r'\$pdo->query\s*\(\s*["\'].*\.\s*\$',
         r'\$\w+->query\s*\(\s*["\'].*\.\s*\$',
     ],
     severity=Severity.CRITICAL,
     languages=[".php"],
-        false_positive_patterns=[
+    false_positive_patterns=[
         r'->prepare\s*\(',
         r'bindParam',
         r'bindValue',
         r'execute\s*\(\s*\[',
+        r'\$pdo',
+        r'\$stmt',
     ],
 ),
 
@@ -1728,35 +1744,50 @@ VulnerabilityPattern(
     name="SQL Injection - Java JDBC",
     category=VulnCategory.SQL_INJECTION,
     patterns=[
-        # Statement (not PreparedStatement)
-        r'createStatement\s*\(\s*\).*executeQuery\s*\(\s*["\'].*\+',
-        r'createStatement\s*\(\s*\).*executeUpdate\s*\(\s*["\'].*\+',
-        r'createStatement\s*\(\s*\).*execute\s*\(\s*["\'].*\+',
-
-        # String building with SQL
-        r'StringBuilder.*append\s*\(\s*["\']SELECT',
-        r'StringBuffer.*append\s*\(\s*["\']SELECT',
-        r'String\.join.*SELECT',
-
-        # Statement.execute with concatenation
+        # Statement (not PreparedStatement) with concatenation
+        r'createStatement\s*\(\s*\).*execute\w*\s*\(\s*["\'].*\+',
         r'statement\.execute\w*\s*\(\s*["\'].*\+',
         r'stmt\.execute\w*\s*\(\s*["\'].*\+',
 
-        # Spring JDBC without parameters
+        # String building with SQL keywords
+        r'StringBuilder.*append\s*\(\s*["\'].*SELECT',
+        r'StringBuffer.*append\s*\(\s*["\'].*SELECT',
+        r'StringBuilder.*append\s*\(\s*["\'].*WHERE',
+        r'StringBuffer.*append\s*\(\s*["\'].*WHERE',
+
+        # Spring JDBC without parameterization
         r'jdbcTemplate\.query\s*\(\s*["\'].*\+',
+        r'jdbcTemplate\.queryForList\s*\(\s*["\'].*\+',
+        r'jdbcTemplate\.queryForObject\s*\(\s*["\'].*\+',
+        r'jdbcTemplate\.queryForMap\s*\(\s*["\'].*\+',
         r'jdbcTemplate\.update\s*\(\s*["\'].*\+',
         r'jdbcTemplate\.execute\s*\(\s*["\'].*\+',
         r'namedParameterJdbcTemplate\.query\s*\(\s*["\'].*\+',
+
+        # Variable SQL query passed to execute methods
+        r'jdbcTemplate\.queryForList\s*\(\s*\w+\s*,',
+        r'jdbcTemplate\.query\s*\(\s*\w+\s*,',
+        r'statement\.executeQuery\s*\(\s*\w+\s*\)',
+        r'stmt\.executeQuery\s*\(\s*\w+\s*\)',
+
+        # Hibernate HQL injection
+        r'createQuery\s*\(\s*["\'].*\+',
+        r'createNativeQuery\s*\(\s*["\'].*\+',
+        r'createSQLQuery\s*\(\s*["\'].*\+',
     ],
     severity=Severity.CRITICAL,
     languages=[".java", ".kt"],
-        false_positive_patterns=[
+    false_positive_patterns=[
         r'PreparedStatement',
         r'prepareStatement',
         r'\?\s*[,\)]',
-        r'setString',
-        r'setInt',
-        r'setLong',
+        r'setString\s*\(',
+        r'setInt\s*\(',
+        r'setLong\s*\(',
+        r'setParameter\s*\(',
+        r'createNamedQuery',
+        r'@Param',
+        r':\w+',
     ],
 ),
 
@@ -1765,32 +1796,34 @@ VulnerabilityPattern(
     category=VulnCategory.SQL_INJECTION,
     patterns=[
         # Direct cursor execution with f-strings
-        r'cursor\.execute\s*\(\s*f["\']',
-        r'cur\.execute\s*\(\s*f["\']',
+        r'cursor\.execute\s*\(\s*f["\']SELECT',
+        r'cursor\.execute\s*\(\s*f["\'].*WHERE',
+        r'cur\.execute\s*\(\s*f["\']SELECT',
         r'\.execute\s*\(\s*f["\']SELECT',
-        r'\.execute\s*\(\s*f["\'].*WHERE',
+        r'\.execute\s*\(\s*f["\']INSERT',
+        r'\.execute\s*\(\s*f["\']UPDATE',
+        r'\.execute\s*\(\s*f["\']DELETE',
 
         # String formatting in execute
-        r'\.execute\s*\(\s*["\'].*%s.*["\'].*%\s*\(',
-        r'\.execute\s*\(\s*["\'].*["\']\.format\s*\(',
+        r'\.execute\s*\(\s*["\']SELECT.*%s.*["\'].*%\s*[\(\[]',
+        r'\.execute\s*\(\s*["\'].*WHERE.*%s.*["\'].*%\s*[\(\[]',
+        r'\.execute\s*\(\s*["\']SELECT.*["\']\.format\s*\(',
+        r'\.execute\s*\(\s*["\'].*WHERE.*["\']\.format\s*\(',
         r'\.executemany\s*\(\s*f["\']',
 
-        # psycopg2 / mysql-connector specific
-        r'cursor\.execute\s*\(\s*["\'].*%\s*\(',
-        r'cursor\.execute\s*\(\s*["\'].*["\']\.format',
-
-        # asyncpg
-        r'connection\.fetch\s*\(\s*f["\']',
+        # asyncpg unsafe
+        r'connection\.fetch\s*\(\s*f["\']SELECT',
         r'connection\.execute\s*\(\s*f["\']',
-        r'pool\.fetch\s*\(\s*f["\']',
+        r'pool\.fetch\s*\(\s*f["\']SELECT',
     ],
     severity=Severity.CRITICAL,
     languages=[".py"],
-        false_positive_patterns=[
-        r'execute\s*\(\s*["\'][^"\']*["\'],\s*[\[\(]',   # Parameterized query
-        r'execute\s*\(\s*["\'][^"\']*["\'],\s*\{',       # Dict params
-        r'%\(\w+\)s',                                      # Named params
+    false_positive_patterns=[
+        r'execute\s*\(\s*["\'][^"\']*["\'],\s*[\[\(]',
+        r'execute\s*\(\s*["\'][^"\']*["\'],\s*\{',
+        r'%\(\w+\)s',
         r'mogrify',
+        r':\w+',
     ],
 ),
 
@@ -1799,14 +1832,14 @@ VulnerabilityPattern(
     category=VulnCategory.SQL_INJECTION,
     patterns=[
         # fmt.Sprintf with SQL
-        r'db\.Query\s*\(\s*fmt\.Sprintf\s*\(',
-        r'db\.QueryRow\s*\(\s*fmt\.Sprintf\s*\(',
-        r'db\.Exec\s*\(\s*fmt\.Sprintf\s*\(',
+        r'db\.Query\s*\(\s*fmt\.Sprintf\s*\(\s*["`]SELECT',
+        r'db\.QueryRow\s*\(\s*fmt\.Sprintf\s*\(\s*["`]SELECT',
+        r'db\.Exec\s*\(\s*fmt\.Sprintf\s*\(\s*["`]',
         r'tx\.Query\s*\(\s*fmt\.Sprintf\s*\(',
         r'tx\.Exec\s*\(\s*fmt\.Sprintf\s*\(',
 
         # String concatenation
-        r'db\.Query\s*\(\s*["`].*\+',
+        r'db\.Query\s*\(\s*["`]SELECT.*\+',
         r'db\.Exec\s*\(\s*["`].*\+',
 
         # GORM raw queries
@@ -1819,40 +1852,37 @@ VulnerabilityPattern(
     ],
     severity=Severity.CRITICAL,
     languages=[".go"],
-        false_positive_patterns=[
-        r'\$\d+',                      # PostgreSQL params
-        r'\?\s*[,\)]',                 # MySQL params
-        r'\.Rebind\s*\(',              # sqlx rebind
+    false_positive_patterns=[
+        r'\$\d+',
+        r'\?\s*[,\)]',
+        r'\.Rebind\s*\(',
     ],
 ),
-
-# =========================================================================
-# C# SPECIFIC SQL INJECTION
-# =========================================================================
 
 VulnerabilityPattern(
     name="SQL Injection - C# ADO.NET",
     category=VulnCategory.SQL_INJECTION,
     patterns=[
         # SqlCommand with interpolation/concatenation
-        r'new\s+SqlCommand\s*\(\s*\$"',
-        r'new\s+SqlCommand\s*\(\s*["\'].*\+',
-        r'SqlCommand\s*\(\s*\$"',
-        r'CommandText\s*=\s*\$"',
-        r'CommandText\s*=\s*["\'].*\+',
+        r'new\s+SqlCommand\s*\(\s*\$"SELECT',
+        r'new\s+SqlCommand\s*\(\s*\$".*WHERE',
+        r'new\s+SqlCommand\s*\(\s*["\']SELECT.*\+',
+        r'SqlCommand\s*\(\s*\$"SELECT',
+        r'CommandText\s*=\s*\$"SELECT',
+        r'CommandText\s*=\s*["\']SELECT.*\+',
 
         # OleDb/Odbc
-        r'new\s+OleDbCommand\s*\(\s*\$"',
-        r'new\s+OdbcCommand\s*\(\s*\$"',
+        r'new\s+OleDbCommand\s*\(\s*\$"SELECT',
+        r'new\s+OdbcCommand\s*\(\s*\$"SELECT',
 
         # SqlDataAdapter
-        r'new\s+SqlDataAdapter\s*\(\s*\$"',
-        r'new\s+SqlDataAdapter\s*\(\s*["\'].*\+',
+        r'new\s+SqlDataAdapter\s*\(\s*\$"SELECT',
+        r'new\s+SqlDataAdapter\s*\(\s*["\']SELECT.*\+',
     ],
     severity=Severity.CRITICAL,
     languages=[".cs"],
-        false_positive_patterns=[
-        r'@\w+',                       # SQL Server parameters
+    false_positive_patterns=[
+        r'@\w+',
         r'Parameters\.Add',
         r'Parameters\.AddWithValue',
         r'\.Parameters\[',
@@ -1864,21 +1894,19 @@ VulnerabilityPattern(
     category=VulnCategory.SQL_INJECTION,
     patterns=[
         # Raw SQL methods with interpolation
-        r'\.FromSqlRaw\s*\(\s*\$"',
-        r'\.FromSqlRaw\s*\(\s*["\'].*\+',
+        r'\.FromSqlRaw\s*\(\s*\$"SELECT',
+        r'\.FromSqlRaw\s*\(\s*["\']SELECT.*\+',
         r'\.ExecuteSqlRaw\s*\(\s*\$"',
         r'\.ExecuteSqlRaw\s*\(\s*["\'].*\+',
-        r'\.SqlQuery\s*\(\s*\$"',
+        r'\.SqlQuery\s*\(\s*\$"SELECT',
         r'Database\.ExecuteSqlCommand\s*\(\s*\$"',
-
-        # EF Core interpolated (safer but flag for review)
-        r'\.FromSqlInterpolated\s*\(\s*\$".*\+',
     ],
     severity=Severity.CRITICAL,
     languages=[".cs"],
-        false_positive_patterns=[
-        r'FromSqlInterpolated',        # EF Core handles this safely
+    false_positive_patterns=[
+        r'FromSqlInterpolated',
         r'@\w+',
+        r'Parameters',
     ],
 ),
 
@@ -1886,25 +1914,21 @@ VulnerabilityPattern(
     name="SQL Injection - C# Dapper",
     category=VulnCategory.SQL_INJECTION,
     patterns=[
-        r'\.Query\s*(<.*>)?\s*\(\s*\$"',
-        r'\.Query\s*(<.*>)?\s*\(\s*["\'].*\+',
+        r'\.Query\s*(<[^>]+>)?\s*\(\s*\$"SELECT',
+        r'\.Query\s*(<[^>]+>)?\s*\(\s*["\']SELECT.*\+',
         r'\.Execute\s*\(\s*\$"',
         r'\.Execute\s*\(\s*["\'].*\+',
-        r'\.QueryFirst\w*\s*(<.*>)?\s*\(\s*\$"',
-        r'\.QuerySingle\w*\s*(<.*>)?\s*\(\s*\$"',
-        r'\.QueryMultiple\s*\(\s*\$"',
+        r'\.QueryFirst\w*\s*(<[^>]+>)?\s*\(\s*\$"SELECT',
+        r'\.QuerySingle\w*\s*(<[^>]+>)?\s*\(\s*\$"SELECT',
+        r'\.QueryMultiple\s*\(\s*\$"SELECT',
     ],
     severity=Severity.CRITICAL,
     languages=[".cs"],
-        false_positive_patterns=[
+    false_positive_patterns=[
         r'@\w+',
-        r',\s*new\s*\{',               # Anonymous object params
+        r',\s*new\s*\{',
     ],
 ),
-
-# =========================================================================
-# SECOND-ORDER & STORED SQL INJECTION
-# =========================================================================
 
 VulnerabilityPattern(
     name="SQL Injection - Stored/Second-Order",
@@ -1918,22 +1942,19 @@ VulnerabilityPattern(
         r'executeQuery\s*\(\s*resultSet\.get',
 
         # Using session/cookie data in queries
-        r'["\']SELECT.*session\[',
-        r'["\']SELECT.*Session\[',
-        r'["\']SELECT.*cookie',
+        r'["\']SELECT.*["\']\s*\+\s*session\.',
+        r'["\']SELECT.*["\']\s*\+\s*Session\[',
+        r'["\']SELECT.*["\']\s*\+\s*cookie',
     ],
     severity=Severity.HIGH,
     languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go"],
-        ),
+    false_positive_patterns=[],
+),
 
-        # =========================================================================
-        # POSTGRESQL SPECIFIC INJECTION
-        # =========================================================================
-
-        VulnerabilityPattern(
-        name="PostgreSQL Injection - Dangerous Functions",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
+VulnerabilityPattern(
+    name="PostgreSQL Injection - Dangerous Functions",
+    category=VulnCategory.POSTGRESQL_INJECTION,
+    patterns=[
         # File system access
         r'pg_read_file\s*\(',
         r'pg_read_binary_file\s*\(',
@@ -1945,56 +1966,57 @@ VulnerabilityPattern(
         r'lo_export\s*\(',
 
         # COPY command with variables
-        r'COPY\s+.+\s+FROM\s+.+[\$\{#]',
-        r'COPY\s+.+\s+TO\s+.+[\$\{#]',
+        r'COPY\s+\w+\s+FROM\s+.*[\$\{#]',
+        r'COPY\s+\w+\s+TO\s+.*[\$\{#]',
 
-        # Code execution
+        # Code execution via procedural languages
         r'CREATE\s+FUNCTION.*LANGUAGE\s+(plpython|plperl|pltcl)',
     ],
     severity=Severity.CRITICAL,
-    languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go"],
-        ),
+    languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go", ".sql"],
+    false_positive_patterns=[],
+),
 
-        # =========================================================================
-        # ORM-SPECIFIC UNSAFE PATTERNS
-        # =========================================================================
-
-        VulnerabilityPattern(
-        name="SQL Injection - ORM Bypass/Unsafe Methods",
-        category=VulnCategory.SQL_INJECTION,
-        patterns=[
-        # Django
+VulnerabilityPattern(
+    name="SQL Injection - ORM Bypass/Unsafe Methods",
+    category=VulnCategory.SQL_INJECTION,
+    patterns=[
+        # Django unsafe
         r'\.extra\s*\(\s*where\s*=\s*\[.*%',
         r'\.extra\s*\(\s*select\s*=\s*\{.*%',
-        r'RawSQL\s*\(',
+        r'RawSQL\s*\(\s*["\'].*%',
+        r'RawSQL\s*\(\s*f["\']',
 
-        # SQLAlchemy
-        r'text\s*\(\s*["\'].*%',
+        # SQLAlchemy unsafe
+        r'text\s*\(\s*["\'].*%.*["\']',
         r'text\s*\(\s*f["\']',
         r'literal_column\s*\(\s*f["\']',
 
-        # Sequelize
+        # Sequelize unsafe
         r'sequelize\.literal\s*\(\s*["\'].*\+',
         r'sequelize\.literal\s*\(\s*`.*\$\{',
         r'Sequelize\.literal\s*\(\s*["\'].*\+',
 
-        # ActiveRecord
+        # ActiveRecord unsafe
         r'\.where\s*\(\s*["\'].*#\{',
         r'\.order\s*\(\s*["\'].*#\{',
         r'\.pluck\s*\(\s*["\'].*#\{',
         r'\.group\s*\(\s*["\'].*#\{',
+        r'\.having\s*\(\s*["\'].*#\{',
 
-        # Hibernate HQL
-        r'createQuery\s*\(\s*["\'].*\+',
-        r'createNativeQuery\s*\(\s*["\'].*\+',
+        # Hibernate HQL unsafe
+        r'createQuery\s*\(\s*["\'].*\+\s*\w+',
+        r'createNativeQuery\s*\(\s*["\'].*\+\s*\w+',
     ],
     severity=Severity.HIGH,
     languages=[".py", ".js", ".ts", ".rb", ".java", ".kt"],
-        false_positive_patterns=[
-        r':\w+',                       # Named parameters
+    false_positive_patterns=[
+        r':\w+',
         r'\?\s*[,\)]',
+        r'@Param',
+        r'setParameter',
     ],
-),
+),             
 # =========================================================================
 # NOSQL INJECTION PATTERNS - ENTERPRISE GRADE COMPREHENSIVE DETECTION
 # =========================================================================
@@ -3127,7 +3149,7 @@ VulnerabilityPattern(
         r'tx\.run\s*\(\s*[^)]*(?:req\.|request\.|params|query|input)',
         
         # Cypher keywords with user input
-        r'(?:MATCH|CREATE|MERGE|DELETE|SET|WHERE|RETURN)\s*[^)]*(?:req\.|request\.|params|query|input)',
+        r'(?:MATCH|CREATE|MERGE|DELETE|SET|WHERE|RETURN)\s*\([^)]*(?:req\.|request\.|params\.|user_input|user_data)',
     ],
     severity=Severity.CRITICAL,
     languages=[".py", ".java", ".js", ".ts", ".go", ".cs"],
@@ -3515,98 +3537,274 @@ VulnerabilityPattern(
             # =========================================================================
 
             VulnerabilityPattern(
-            name="Auth Bypass - Hardcoded Credentials",
-            category=VulnCategory.AUTH_BYPASS,
-            patterns = [
-            # Original patterns
-            r'password\s*[=:]\s*["\'][^"\']{4,}["\']',
-            r'passwd\s*[=:]\s*["\'][^"\']{4,}["\']',
-            r'pwd\s*[=:]\s*["\'][^"\']{4,}["\']',
-            r'secret\s*[=:]\s*["\'][^"\']{8,}["\']',
-            r'api[_-]?key\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
-            r'apikey\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
-            r'auth[_-]?token\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
-            r'access[_-]?token\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
-            r'private[_-]?key\s*[=:]\s*["\']',
-            r'connectionString\s*[=:]\s*["\'].*Password',
-            r'ConnectionString\s*=\s*["\'].*Password',
+                name="Auth Bypass - Hardcoded Credentials",
+                category=VulnCategory.AUTH_BYPASS,
+                patterns=[
+                    # -----------------------------------------------------------------
+                    # Assignment patterns
+                    # -----------------------------------------------------------------
+                    r'password\s*[=:]\s*["\'][^"\']{4,}["\']',
+                    r'passwd\s*[=:]\s*["\'][^"\']{4,}["\']',
+                    r'pwd\s*[=:]\s*["\'][^"\']{4,}["\']',
+                    r'secret\s*[=:]\s*["\'][^"\']{8,}["\']',
+                    r'api[_-]?key\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
+                    r'apikey\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
+                    r'auth[_-]?token\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
+                    r'access[_-]?token\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']',
+                    r'private[_-]?key\s*[=:]\s*["\']',
+                    r'connectionString\s*[=:]\s*["\'].*Password',
+                    r'ConnectionString\s*=\s*["\'].*Password',
+                    r'admin[_-]?password\s*[=:]\s*["\'][^"\']{4,}["\']',
+                    r'api[_-]?token\s*[=:]\s*["\'][^"\']{16,}["\']',
+                    r'bearer[_-]?token\s*[=:]\s*["\'][^"\']{16,}["\']',
 
-            # 1. AWS Keys
-            r'AKIA[0-9A-Z]{16}',  # AWS Access Key ID
-            r'aws[_-]?secret[_-]?access[_-]?key\s*[=:]\s*["\'][A-Za-z0-9/+=]{40}["\']',
-            r'AWS_SECRET_ACCESS_KEY\s*[=:]\s*["\'][A-Za-z0-9/+=]{40}["\']',
+                    # -----------------------------------------------------------------
+                    # AWS Keys
+                    # -----------------------------------------------------------------
+                    r'AKIA[0-9A-Z]{16}',
+                    r'aws[_-]?secret[_-]?access[_-]?key\s*[=:]\s*["\'][A-Za-z0-9/+=]{40}["\']',
+                    r'AWS_SECRET_ACCESS_KEY\s*[=:]\s*["\'][A-Za-z0-9/+=]{40}["\']',
 
-            # 2. Database Connection Strings
-            r'mongodb(\+srv)?://[^\s"\']+:[^\s"\']+@[^\s"\']+',  # MongoDB URI with creds
-            r'postgres(ql)?://[^\s"\']+:[^\s"\']+@[^\s"\']+',    # PostgreSQL URI with creds
-            r'mysql://[^\s"\']+:[^\s"\']+@[^\s"\']+',            # MySQL URI with creds
-            r'redis://[^\s"\']+:[^\s"\']+@[^\s"\']+',            # Redis URI with creds
+                    # -----------------------------------------------------------------
+                    # Database Connection Strings
+                    # -----------------------------------------------------------------
+                    r'mongodb(\+srv)?://[^\s"\']+:[^\s"\']+@[^\s"\']+',
+                    r'postgres(ql)?://[^\s"\']+:[^\s"\']+@[^\s"\']+',
+                    r'mysql://[^\s"\']+:[^\s"\']+@[^\s"\']+',
+                    r'redis://[^\s"\']+:[^\s"\']+@[^\s"\']+',
 
-            # 3. Payment & SaaS API Keys
-            r'sk_live_[a-zA-Z0-9]{24,}',           # Stripe live secret key
-            r'sk_test_[a-zA-Z0-9]{24,}',           # Stripe test secret key
-            r'rk_live_[a-zA-Z0-9]{24,}',           # Stripe restricted key
-            r'https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[a-zA-Z0-9]+',  # Slack webhook
-            r'xox[baprs]-[0-9a-zA-Z-]+',           # Slack tokens
+                    # -----------------------------------------------------------------
+                    # Payment & SaaS API Keys
+                    # -----------------------------------------------------------------
+                    r'sk_live_[a-zA-Z0-9]{24,}',
+                    r'sk_test_[a-zA-Z0-9]{24,}',
+                    r'rk_live_[a-zA-Z0-9]{24,}',
+                    r'https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[a-zA-Z0-9]+',
+                    r'xox[baprs]-[0-9a-zA-Z-]+',
 
-            # 4. Session/App Secrets (generic high-entropy strings)
-            r'SESSION_SECRET\s*[=:]\s*["\'][^"\']{16,}["\']',
-            r'APP_SECRET\s*[=:]\s*["\'][^"\']{16,}["\']',
-            r'JWT_SECRET\s*[=:]\s*["\'][^"\']{16,}["\']',
+                    # -----------------------------------------------------------------
+                    # Session/App Secrets
+                    # -----------------------------------------------------------------
+                    r'SESSION_SECRET\s*[=:]\s*["\'][^"\']{16,}["\']',
+                    r'APP_SECRET\s*[=:]\s*["\'][^"\']{16,}["\']',
+                    r'JWT_SECRET\s*[=:]\s*["\'][^"\']{16,}["\']',
 
-            # 5. Common variable names with values
-            r'admin[_-]?password\s*[=:]\s*["\'][^"\']{4,}["\']',
-            r'api[_-]?token\s*[=:]\s*["\'][^"\']{16,}["\']',
-            r'bearer[_-]?token\s*[=:]\s*["\'][^"\']{16,}["\']',
+                    # -----------------------------------------------------------------
+                    # SSH/PGP Private Keys
+                    # -----------------------------------------------------------------
+                    r'-----BEGIN\s+(RSA|DSA|EC|OPENSSH|PGP)\s+PRIVATE\s+KEY-----',
+                    r'-----BEGIN\s+PRIVATE\s+KEY-----',
 
-            # 6. SSH/PGP Private Keys
-            r'-----BEGIN\s+(RSA|DSA|EC|OPENSSH|PGP)\s+PRIVATE\s+KEY-----',
-            r'-----BEGIN\s+PRIVATE\s+KEY-----',
+                    # -----------------------------------------------------------------
+                    # Auth Headers
+                    # -----------------------------------------------------------------
+                    r'Basic\s+[A-Za-z0-9+/=]{10,}',
+                    r'Bearer\s+[A-Za-z0-9._-]{20,}',
 
-            # 7. Basic Auth Headers
-            r'Basic\s+[A-Za-z0-9+/=]{10,}',        # Base64 encoded Basic auth
-            r'Bearer\s+[A-Za-z0-9._-]{20,}',       # Bearer tokens
+                    # -----------------------------------------------------------------
+                    # Cloud Providers
+                    # -----------------------------------------------------------------
+                    r'AZURE[_-]?(?:CLIENT|TENANT|SUBSCRIPTION)[_-]?(?:ID|SECRET)\s*[=:]\s*["\'][^"\']+["\']',
+                    r'GOOGLE[_-]?(?:API[_-]?KEY|CLIENT[_-]?SECRET)\s*[=:]\s*["\'][^"\']+["\']',
+                    r'gh[pousr]_[A-Za-z0-9_]{36,}',
 
-            # 8. Additional cloud providers
-            r'AZURE[_-]?(?:CLIENT|TENANT|SUBSCRIPTION)[_-]?(?:ID|SECRET)\s*[=:]\s*["\'][^"\']+["\']',
-            r'GOOGLE[_-]?(?:API[_-]?KEY|CLIENT[_-]?SECRET)\s*[=:]\s*["\'][^"\']+["\']',
-            r'gh[pousr]_[A-Za-z0-9_]{36,}',        # GitHub tokens
+                    # -----------------------------------------------------------------
+                    # JWT Tokens
+                    # -----------------------------------------------------------------
+                    r'eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*',
 
-            # 9. JWT tokens (full format)
-            r'eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*',
-        ],
-        severity=Severity.HIGH,
-        languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go", ".kt", ".env", ".config", ".json", ".yaml", ".yml"],
-    false_positive_patterns=[r'process\.env', r'os\.environ', r'getenv', r'password\s*[=:]\s*["\']["\']', r'<PASSWORD>', r'\$\{', r'Environment\.GetEnvironmentVariable', r'Configuration\['],
-    ),
+                    # -----------------------------------------------------------------
+                    # Hardcoded credential comparisons (Java)
+                    # -----------------------------------------------------------------
+                    r'["\'][^"\']{4,}["\']\s*\.\s*equals\s*\(\s*\w+\s*\)',
+                    r'["\'][^"\']{4,}["\']\s*\.\s*equalsIgnoreCase\s*\(\s*\w+\s*\)',
+                    r'\.\s*equals\s*\(\s*["\'][^"\']{4,}["\']\s*\)',
+                    r'\.\s*equalsIgnoreCase\s*\(\s*["\'][^"\']{4,}["\']\s*\)',
+
+                    # -----------------------------------------------------------------
+                    # Hardcoded credential comparisons (Python/JS/Ruby/Go)
+                    # -----------------------------------------------------------------
+                    r'(?:password|passwd|pwd|secret|token|key|api_key|auth)\s*[=!]=\s*["\'][^"\']{4,}["\']',
+                    r'["\'][^"\']{4,}["\']\s*[=!]=\s*(?:password|passwd|pwd|secret|token|key)',
+                    r'==\s*["\'][^"\']{4,}["\']\s*\{',
+
+                    # -----------------------------------------------------------------
+                    # Hardcoded credential comparisons (C#)
+                    # -----------------------------------------------------------------
+                    r'\.Equals\s*\(\s*["\'][^"\']{4,}["\']\s*\)',
+                    r'["\'][^"\']{4,}["\']\s*\.Equals\s*\(',
+
+                    # -----------------------------------------------------------------
+                    # Common weak passwords (with auth context)
+                    # -----------------------------------------------------------------
+                    r'\.equals\s*\(\s*["\'](?:admin123|password123|123456|root123|passw0rd|welcome1|letmein)["\']',
+                    r'["\'](?:admin123|password123|123456|root123|passw0rd|welcome1|letmein)["\']\s*\.equals',
+                    r'[=!]=\s*["\'](?:admin123|password123|123456|root123|passw0rd|welcome1|letmein)["\']',
+
+                    # -----------------------------------------------------------------
+                    # Header-based auth with hardcoded values
+                    # -----------------------------------------------------------------
+                    r'X-(?:Admin|Auth|Api)-(?:Key|Token|Secret)["\'].*["\'][^"\']{4,20}["\']',
+                ],
+                severity=Severity.HIGH,
+                languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go", ".kt", ".env", ".config", ".json", ".yaml", ".yml"],
+                false_positive_patterns=[
+                    r'process\.env',
+                    r'os\.environ',
+                    r'getenv',
+                    r'System\.getenv',
+                    r'password\s*[=:]\s*["\']["\']',
+                    r'<PASSWORD>',
+                    r'\$\{',
+                    r'Environment\.GetEnvironmentVariable',
+                    r'Configuration\[',
+                    r'\.getProperty\s*\(',
+                    r'@Value\s*\(',
+                    r'test[_-]?password',
+                    r'mock[_-]?password',
+                    r'example[_-]?password',
+                    r'your[_-]?password[_-]?here',
+                    r'CHANGE[_-]?ME',
+                    r'xxx+',
+                    r'\*{4,}',
+                    r'\.put\s*\(\s*["\']admin["\']',
+                    r'\.get\s*\(\s*["\']admin["\']',
+                    r'config\s*\[\s*["\']admin["\']\s*\]',
+                    r'["\']admin["\']\s*[=:]\s*(?:true|false|True|False)',
+                ],
+            ),
+
             VulnerabilityPattern(
-            name="Auth Bypass - JWT None Algorithm",
-            category=VulnCategory.AUTH_BYPASS,
-            patterns=[
-            r'algorithms\s*[=:]\s*\[\s*["\']none["\']',
-            r'algorithm\s*[=:]\s*["\']none["\']',
-            r'jwt\.decode\s*\([^)]*verify\s*=\s*False',
-            r'ValidateIssuerSigningKey\s*=\s*false',
-            r'RequireSignedTokens\s*=\s*false',
-        ],
-        severity=Severity.CRITICAL,
-        languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go"],
-    false_positive_patterns=[r'jwt\.verify', r'^#', r'^\s*#', r'//.*verify', r'FrappeClient.*verify=False'],
-    ),
+                name="Auth Bypass - JWT None Algorithm",
+                category=VulnCategory.AUTH_BYPASS,
+                patterns=[
+                    r'algorithms\s*[=:]\s*\[\s*["\']none["\']',
+                    r'algorithm\s*[=:]\s*["\']none["\']',
+                    r'jwt\.decode\s*\([^)]*verify\s*=\s*False',
+                    r'ValidateIssuerSigningKey\s*=\s*false',
+                    r'RequireSignedTokens\s*=\s*false',
+                    r'verify\s*[=:]\s*false',
+                    r'ignoreExpiration\s*[=:]\s*true',
+                    r'ignoreNotBefore\s*[=:]\s*true',
+                    r'algorithms\s*[=:]\s*\[\s*\]',
+                ],
+                severity=Severity.CRITICAL,
+                languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go"],
+                false_positive_patterns=[
+                    r'jwt\.verify',
+                    r'^#',
+                    r'^\s*#',
+                    r'//.*verify',
+                    r'FrappeClient.*verify=False',
+                ],
+            ),
+
             VulnerabilityPattern(
-            name="Auth Bypass - Weak Comparison",
-            category=VulnCategory.AUTH_BYPASS,
-            patterns=[
-            r'password\s*==\s*',
-            r'token\s*==\s*',
-            r'secret\s*==\s*',
-            r'strcmp\s*\(\s*\$',
-            r'strcasecmp\s*\(\s*\$',
-        ],
-        severity=Severity.MEDIUM,
-        languages=[".php", ".js"],
-    false_positive_patterns=[r'===', r'!=='],
-    ),
+                name="Auth Bypass - Weak Comparison",
+                category=VulnCategory.AUTH_BYPASS,
+                patterns=[
+                    r'password\s*==\s*',
+                    r'token\s*==\s*',
+                    r'secret\s*==\s*',
+                    r'strcmp\s*\(\s*\$',
+                    r'strcasecmp\s*\(\s*\$',
+                    r'\$\w*(?:pass|pwd|token|secret|key)\w*\s*==\s*',
+                    r'md5\s*\([^)]+\)\s*==',
+                    r'sha1\s*\([^)]+\)\s*==',
+                ],
+                severity=Severity.MEDIUM,
+                languages=[".php", ".js"],
+                false_positive_patterns=[
+                    r'===',
+                    r'!==',
+                    r'hash_equals',
+                    r'secure_compare',
+                    r'constant_time_compare',
+                    r'timingSafeEqual',
+                ],
+            ),
+
+            VulnerabilityPattern(
+                name="Auth Bypass - Empty/Null Check Bypass",
+                category=VulnCategory.AUTH_BYPASS,
+                patterns=[
+                    # Java empty/null bypasses
+                    r'\|\|\s*\w+\s*\.\s*isEmpty\s*\(\s*\)',
+                    r'\|\|\s*\w+\s*\.\s*isBlank\s*\(\s*\)',
+                    r'\|\|\s*\w+\s*==\s*null',
+                    r'\|\|\s*null\s*==\s*\w+',
+                    r'(?:password|token|key|secret|auth)\w*\s*\.\s*isEmpty\s*\(\s*\)',
+                    r'StringUtils\.isEmpty\s*\(\s*(?:password|token|key|secret|auth)',
+                    r'StringUtils\.isBlank\s*\(\s*(?:password|token|key|secret|auth)',
+
+                    # Python empty/None bypasses
+                    r'if\s+not\s+(?:password|token|key|secret|auth)\w*\s*:',
+                    r'(?:password|token|key|secret|auth)\w*\s*(?:==|is)\s*None',
+                    r'(?:password|token|key|secret|auth)\w*\s*==\s*["\']["\']',
+
+                    # JS/TS falsy bypasses
+                    r'!\s*(?:password|token|key|secret|auth)\w*\s*[&|{)\]]',
+                    r'(?:password|token|key|secret|auth)\w*\s*===?\s*(?:undefined|null|"")',
+
+                    # PHP empty bypasses
+                    r'empty\s*\(\s*\$(?:password|token|key|secret|auth)',
+                    r'is_null\s*\(\s*\$(?:password|token|key|secret|auth)',
+
+                    # C# empty/null bypasses
+                    r'string\.IsNullOrEmpty\s*\(\s*(?:password|token|key|secret|auth)',
+                    r'string\.IsNullOrWhiteSpace\s*\(\s*(?:password|token|key|secret|auth)',
+                ],
+                severity=Severity.CRITICAL,
+                languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go", ".kt"],
+                false_positive_patterns=[
+                    r'throw',
+                    r'raise',
+                    r'return\s+false',
+                    r'return\s+False',
+                    r'deny',
+                    r'reject',
+                    r'unauthorized',
+                    r'forbidden',
+                ],
+            ),
+
+            VulnerabilityPattern(
+                name="Auth Bypass - Broken Access Control",
+                category=VulnCategory.AUTH_BYPASS,
+                patterns=[
+                    # OR conditions that bypass auth
+                    r'\|\|\s*\w+\s*\.\s*isEmpty\s*\(\s*\)',
+                    r'\|\|\s*\w+\s*\.\s*isBlank\s*\(\s*\)',
+                    r'\|\|\s*\w+\s*[=!]=\s*["\']["\']',
+                    r'\|\|\s*!\s*\w+',
+                    r'\|\|\s*\w+\s*==\s*null',
+
+                    # Commented out auth checks
+                    r'//\s*if\s*\(\s*!?\s*(?:auth|isAdmin|checkPermission|verify|isAuthenticated)',
+                    r'#\s*if\s+not\s+(?:auth|is_admin|check_permission|verify)',
+
+                    # Always-true conditions
+                    r'if\s*\(\s*true\s*\)',
+                    r'if\s+True\s*:',
+                    r'if\s*\(\s*1\s*\)',
+
+                    # Role checks with hardcoded values
+                    r'(?:role|isAdmin|is_admin|userRole)\s*[=!]=\s*["\'](?:admin|root|superuser)["\']',
+
+                    # Insecure default permissions
+                    r'(?:isAdmin|is_admin|hasAccess|authorized)\s*[=:]\s*true',
+                    r'(?:isAdmin|is_admin|hasAccess|authorized)\s*[=:]\s*True',
+                ],
+                severity=Severity.CRITICAL,
+                languages=[".js", ".ts", ".py", ".php", ".java", ".cs", ".rb", ".go", ".kt"],
+                false_positive_patterns=[
+                    r'test',
+                    r'spec',
+                    r'mock',
+                    r'\.test\.',
+                    r'_test\.',
+                ],
+            ),
 
             # =========================================================================
             # SSTI (Server-Side Template Injection) PATTERNS
@@ -4341,7 +4539,13 @@ VulnerabilityPattern(
     severity=Severity.HIGH,
     languages=[".js", ".ts", ".jsx", ".tsx", ".mjs"],
         false_positive_patterns=[
-        r'https?://localhost',
+                    r'getDeclaredConstructor',
+                    r'clazz\..*newInstance',
+                    r'Class\.forName',
+r'getDeclaredConstructor',
+                    r'clazz\..*newInstance',
+                    r'Class\.forName',
+r'https?://localhost',
         r'https?://127\.0\.0\.1',
         r'https?://0\.0\.0\.0',
         r'https?://\[::1\]',
