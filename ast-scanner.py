@@ -4358,6 +4358,7 @@ class CSharpAnalyzer:
             if line.strip().startswith('//'):
                 continue
 
+            # Standard XML parser XXE
             if re.search(r'XmlDocument|XmlReader|XmlTextReader', line):
                 context = '\n'.join(self.source_lines[i:min(len(self.source_lines), i+10)])
                 has_secure = re.search(r'DtdProcessing\s*=\s*DtdProcessing\.Prohibit|XmlResolver\s*=\s*null', context)
@@ -4365,6 +4366,48 @@ class CSharpAnalyzer:
                     self._add_finding(i, "XXE - XML parser without secure configuration",
                                       VulnCategory.XXE, Severity.HIGH, "MEDIUM",
                                       description="XML parser should disable DTD processing.")
+
+            # XSLT-based XXE (XslCompiledTransform) - "Stealth" XXE
+            if re.search(r'XslCompiledTransform|XsltSettings', line):
+                context = '\n'.join(self.source_lines[max(0, i-5):min(len(self.source_lines), i+10)])
+
+                # Check for XsltSettings with enableDocumentFunction=true
+                # XsltSettings(true, ...) or XsltSettings.TrustedXslt
+                dangerous_settings = re.search(
+                    r'XsltSettings\s*\(\s*true|XsltSettings\.TrustedXslt',
+                    context
+                )
+
+                # Check for XmlUrlResolver passed to Load()
+                has_resolver = re.search(
+                    r'\.Load\s*\([^)]*(?:new\s+XmlUrlResolver|XmlUrlResolver)',
+                    context
+                )
+
+                is_tainted, taint_var = self._is_tainted(context)
+
+                if dangerous_settings and has_resolver:
+                    self._add_finding(i, "XXE - XslCompiledTransform with document() and XmlUrlResolver",
+                                      VulnCategory.XXE, Severity.CRITICAL, "HIGH", taint_var,
+                                      "XSLT transformation enables document() function with XmlUrlResolver. "
+                                      "Attacker-controlled XSLT can read arbitrary files via XXE.")
+                elif dangerous_settings:
+                    self._add_finding(i, "XXE - XsltSettings enables document() function",
+                                      VulnCategory.XXE, Severity.HIGH, "HIGH",
+                                      description="XsltSettings(true, ...) enables document() which can load external resources. "
+                                      "If XSLT source is attacker-controlled, this enables XXE.")
+                elif has_resolver:
+                    self._add_finding(i, "XXE - XslCompiledTransform with XmlUrlResolver",
+                                      VulnCategory.XXE, Severity.HIGH, "MEDIUM",
+                                      description="XSLT Load() uses XmlUrlResolver which allows external entity resolution.")
+
+            # XmlUrlResolver with explicit DTD enabling
+            if re.search(r'XmlUrlResolver', line) and not re.search(r'XslCompiledTransform|XsltSettings', line):
+                context = '\n'.join(self.source_lines[max(0, i-5):min(len(self.source_lines), i+5)])
+                if re.search(r'XmlDocument|XmlReader|LoadXml|XmlResolver\s*=', context):
+                    self._add_finding(i, "XXE - XmlUrlResolver enables external entity resolution",
+                                      VulnCategory.XXE, Severity.HIGH, "MEDIUM",
+                                      description="XmlUrlResolver allows loading external entities. Use null resolver or restrict.")
 
     def _check_ldap_injection(self):
         for i, line in enumerate(self.source_lines, 1):
