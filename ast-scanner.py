@@ -4054,12 +4054,59 @@ class CSharpAnalyzer:
                                           description="SQL uses string concatenation. Use parameterized queries.")
 
     def _check_command_injection(self):
+        # Common system tools used in "helper" wrapper methods
+        system_tools = r'(?:ping|ipconfig|ifconfig|nslookup|tracert|traceroute|netstat|whoami|hostname|' \
+                       r'git|svn|curl|wget|ssh|scp|ftp|telnet|nmap|dig|arp|route|systeminfo|tasklist|' \
+                       r'sc|net|wmic|reg|certutil|bitsadmin|msiexec|mshta|cscript|wscript)'
+
+        # Track ProcessStartInfo blocks for multi-line analysis
+        in_psi_block = False
+        psi_block_start = 0
+        psi_block_lines = []
+
         for i, line in enumerate(self.source_lines, 1):
             if line.strip().startswith('//'):
                 continue
 
+            # Detect ProcessStartInfo object initializer blocks
+            if re.search(r'new\s+ProcessStartInfo\s*\{', line) or re.search(r'ProcessStartInfo\s+\w+\s*=\s*new\s+ProcessStartInfo\s*\{', line):
+                in_psi_block = True
+                psi_block_start = i
+                psi_block_lines = [line]
+            elif in_psi_block:
+                psi_block_lines.append(line)
+                if '}' in line and line.count('}') > line.count('{'):
+                    # End of PSI block - analyze it
+                    block_text = '\n'.join(psi_block_lines)
+                    self._analyze_psi_block(psi_block_start, block_text, system_tools)
+                    in_psi_block = False
+                    psi_block_lines = []
+
+            # Check for Arguments property assignment with concatenation
+            if re.search(r'\.Arguments\s*=', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                has_concat = '+' in line or '$"' in line or 'String.Format' in line or '$@"' in line
+
+                # Check for system tools in Arguments
+                has_system_tool = re.search(system_tools, line, re.IGNORECASE)
+
+                if is_tainted and has_concat:
+                    self._add_finding(i, "Command Injection - Arguments with concatenated user input",
+                                      VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "User input concatenated into process Arguments property.")
+                elif is_tainted:
+                    self._add_finding(i, "Command Injection - Arguments with tainted data",
+                                      VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH", taint_var,
+                                      "User input passed to process Arguments.")
+                elif has_concat and has_system_tool:
+                    self._add_finding(i, "Command Injection - System tool wrapper with dynamic arguments",
+                                      VulnCategory.COMMAND_INJECTION, Severity.HIGH, "MEDIUM",
+                                      description=f"Arguments to system tool built via concatenation. Validate/escape input.")
+
             if re.search(r'Process\.Start\s*\(|ProcessStartInfo', line):
                 is_tainted, taint_var = self._is_tainted(line)
+                has_concat = '+' in line or '$"' in line or 'String.Format' in line
+
                 if is_tainted:
                     self._add_finding(i, "Command Injection - Process.Start with tainted data",
                                       VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
@@ -4072,14 +4119,20 @@ class CSharpAnalyzer:
                     context, re.IGNORECASE
                 )
                 if shell_pattern:
-                    if is_tainted:
+                    # Check taint in broader context
+                    context_tainted, context_taint_var = self._is_tainted(context)
+                    if context_tainted:
                         self._add_finding(i, "Command Injection - Shell execution pattern with tainted input",
-                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", context_taint_var,
                                           "Process.Start with cmd/powershell -c and user-controlled command.")
+                    elif has_concat or '+' in context:
+                        self._add_finding(i, "Command Injection - Shell execution with dynamic command",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                          description="Process.Start with cmd/powershell -c and string concatenation.")
                     else:
                         self._add_finding(i, "Command Injection - Shell execution pattern",
-                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
-                                          description="Process.Start with cmd/powershell -c pattern.")
+                                          VulnCategory.COMMAND_INJECTION, Severity.MEDIUM, "MEDIUM",
+                                          description="Process.Start with cmd/powershell -c pattern. Review for injection.")
 
             # Reflection-based execution: Type.InvokeMember, MethodInfo.Invoke
             if re.search(r'\.InvokeMember\s*\(|MethodInfo.*\.Invoke\s*\(', line):
@@ -4094,6 +4147,46 @@ class CSharpAnalyzer:
                         self._add_finding(i, "Command Injection - Reflection Invoke (evasion)",
                                           VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
                                           description="Reflection invoke near command execution - evasion technique.")
+
+    def _analyze_psi_block(self, start_line: int, block_text: str, system_tools: str):
+        """Analyze a ProcessStartInfo object initializer block for command injection."""
+        is_tainted, taint_var = self._is_tainted(block_text)
+        has_concat = '+' in block_text or '$"' in block_text or 'String.Format' in block_text
+
+        # Check for shell with arguments pattern
+        shell_with_args = re.search(
+            r'FileName\s*=\s*["\'](?:cmd(?:\.exe)?|powershell(?:\.exe)?|/bin/(?:ba)?sh)["\']',
+            block_text, re.IGNORECASE
+        )
+        has_arguments = re.search(r'Arguments\s*=', block_text)
+        has_system_tool = re.search(system_tools, block_text, re.IGNORECASE)
+
+        if shell_with_args and has_arguments:
+            if is_tainted and has_concat:
+                self._add_finding(start_line, "Command Injection - ProcessStartInfo shell wrapper with tainted arguments",
+                                  VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                  "Shell invoked with user-controlled arguments via string concatenation.")
+            elif is_tainted:
+                self._add_finding(start_line, "Command Injection - ProcessStartInfo shell wrapper with user input",
+                                  VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                  "Shell invoked with user-controlled arguments.")
+            elif has_concat:
+                self._add_finding(start_line, "Command Injection - ProcessStartInfo shell wrapper with dynamic arguments",
+                                  VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                  description="Shell invoked with dynamically constructed arguments. Validate/escape input.")
+        elif has_system_tool and has_arguments:
+            if is_tainted and has_concat:
+                self._add_finding(start_line, "Command Injection - System tool wrapper with tainted arguments",
+                                  VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                  f"System tool invoked with user input concatenated into arguments.")
+            elif is_tainted:
+                self._add_finding(start_line, "Command Injection - System tool wrapper with user input",
+                                  VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH", taint_var,
+                                  "System tool invoked with user-controlled arguments.")
+            elif has_concat:
+                self._add_finding(start_line, "Command Injection - System tool with dynamic arguments",
+                                  VulnCategory.COMMAND_INJECTION, Severity.MEDIUM, "MEDIUM",
+                                  description="System tool arguments built via concatenation. Review for injection.")
 
     def _check_deserialization(self):
         deser_patterns = [

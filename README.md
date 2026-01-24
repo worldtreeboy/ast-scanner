@@ -221,7 +221,7 @@ python3 ast-scanner.py project/ -v
 <td><strong>C#</strong></td>
 <td><code>.cs</code></td>
 <td>Regex-enhanced</td>
-<td>Variable tracking</td>
+<td>Full taint + ProcessStartInfo block analysis</td>
 </tr>
 <tr>
 <td><strong>Go</strong></td>
@@ -421,6 +421,54 @@ public class NativeWrapper {
     }
 }
 ```
+
+### C# OS Command Injection Detection
+
+The scanner detects common "helper wrapper" patterns where developers create utility methods for system tools without proper input escaping:
+
+```csharp
+// Detected: ProcessStartInfo object initializer with tainted arguments
+public class NetworkTools {
+    public void PingHost(string address) {
+        // VULNERABLE: User input concatenated into shell arguments
+        ProcessStartInfo psi = new ProcessStartInfo {
+            FileName = "cmd.exe",
+            Arguments = "/c ping " + address,  // Attack: "8.8.8.8 && rm -rf /"
+            UseShellExecute = false
+        };
+        Process.Start(psi);
+    }
+}
+
+// Detected: Interpolated strings in Arguments
+public void NslookupHost(string domain) {
+    var psi = new ProcessStartInfo {
+        FileName = "cmd.exe",
+        Arguments = $"/c nslookup {domain}",  // Flagged
+        UseShellExecute = false
+    };
+    Process.Start(psi);
+}
+
+// Detected: ASP.NET request input flowing to Process.Start
+public void HandleRequest(HttpRequest request) {
+    string host = request.QueryString["host"];  // Taint source
+    ProcessStartInfo psi = new ProcessStartInfo {
+        FileName = "cmd.exe",
+        Arguments = "/c ping " + host,  // Flagged as CRITICAL
+        UseShellExecute = false
+    };
+    Process.Start(psi);
+}
+```
+
+**Detected Patterns:**
+- `ProcessStartInfo` object initializer blocks with shell commands
+- `Arguments` property with string concatenation (`+`), interpolation (`$""`), or `String.Format`
+- 30+ system tools: `ping`, `ipconfig`, `git`, `nslookup`, `tracert`, `curl`, `wget`, `ssh`, `nmap`, etc.
+- Shell wrappers: `cmd.exe`, `powershell.exe`, `/bin/sh`, `/bin/bash`
+- Direct `Process.Start()` calls with tainted arguments
+- Reflection-based process invocation (evasion detection)
 
 ---
 
