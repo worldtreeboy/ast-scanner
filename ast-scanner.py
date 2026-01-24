@@ -1411,6 +1411,36 @@ class PythonTaintTracker(ast.NodeVisitor):
                         category=VulnCategory.CODE_INJECTION, severity=Severity.HIGH,
                         confidence="HIGH", description="getattr() with decoded/obfuscated attribute name."
                     ))
+                # Enhanced: Check if second argument is a tainted/user-controlled variable
+                getattr_match = re.search(r'getattr\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)', line)
+                if getattr_match:
+                    attr_var = getattr_match.group(2)
+                    # Check if the variable is in tainted_vars
+                    if attr_var in self.tainted_vars:
+                        self.findings.append(Finding(
+                            file_path=self.file_path, line_number=i, col_offset=0,
+                            line_content=line, vulnerability_name="Code Evasion - getattr with tainted attribute name",
+                            category=VulnCategory.CODE_INJECTION, severity=Severity.CRITICAL,
+                            confidence="HIGH", description=f"getattr() with user-controlled attribute name '{attr_var}'. Attacker can access arbitrary attributes/methods."
+                        ))
+                    else:
+                        # Check context for user input flowing to the variable
+                        context = '\n'.join(self.source_lines[max(0, i-10):i])
+                        user_input_patterns = [
+                            rf'{attr_var}\s*=\s*\w+\.get\s*\(',  # var = dict.get("key")
+                            rf'{attr_var}\s*=\s*request\.',       # var = request.xxx
+                            rf'{attr_var}\s*=\s*input\s*\(',      # var = input()
+                            rf'{attr_var}\s*=\s*\w+\[',           # var = dict["key"]
+                        ]
+                        for pattern in user_input_patterns:
+                            if re.search(pattern, context):
+                                self.findings.append(Finding(
+                                    file_path=self.file_path, line_number=i, col_offset=0,
+                                    line_content=line, vulnerability_name="Code Evasion - getattr with user-derived attribute",
+                                    category=VulnCategory.CODE_INJECTION, severity=Severity.HIGH,
+                                    confidence="HIGH", description=f"getattr() with '{attr_var}' which appears to be user-derived. Dynamic attribute resolution enables arbitrary method access."
+                                ))
+                                break
 
             # 3. Metaclass abuse for code execution
             if re.search(r'metaclass\s*=', line) or re.search(r'class\s+\w+Meta\s*\(\s*type\s*\)', line):
@@ -3462,6 +3492,47 @@ class JavaScriptAnalyzer:
                                       "Prototype pollution can override sanitization functions "
                                       "or inject properties that become XSS vectors.")
 
+            # ===== PATTERN 10: Proxy trap evasion =====
+            # Detect: new Proxy(target, { get: (t, p) => { eval(...) } })
+            # Any property access on the proxy can trigger the dangerous sink
+            if re.search(r'new\s+Proxy\s*\(', line):
+                # Look for handler with get/set traps containing dangerous sinks
+                context_end = min(len(self.source_lines), i + 20)
+                proxy_context = '\n'.join(self.source_lines[i-1:context_end])
+
+                # Check for get trap with dangerous code
+                get_trap_match = re.search(r'get\s*:\s*(?:\([^)]*\)|function\s*\([^)]*\))\s*(?:=>)?\s*\{?([^}]*(?:\{[^}]*\})?[^}]*)\}?', proxy_context, re.DOTALL)
+                if get_trap_match:
+                    trap_body = get_trap_match.group(1)
+                    dangerous_in_getter = re.search(r'eval\s*\(|Function\s*\(|innerHTML|outerHTML|document\.write|\.html\s*\(', trap_body)
+                    if dangerous_in_getter:
+                        self._add_finding(i, "Evasive XSS - Proxy get trap with dangerous sink",
+                                          VulnCategory.XSS, Severity.CRITICAL, "HIGH",
+                                          "Proxy handler 'get' trap contains dangerous sink (eval/innerHTML). "
+                                          "Any property access like proxy.anyProp triggers code execution.")
+
+                # Check for set trap with dangerous code
+                set_trap_match = re.search(r'set\s*:\s*(?:\([^)]*\)|function\s*\([^)]*\))\s*(?:=>)?\s*\{?([^}]*(?:\{[^}]*\})?[^}]*)\}?', proxy_context, re.DOTALL)
+                if set_trap_match:
+                    trap_body = set_trap_match.group(1)
+                    dangerous_in_setter = re.search(r'eval\s*\(|Function\s*\(|innerHTML|outerHTML|document\.write|\.html\s*\(', trap_body)
+                    if dangerous_in_setter:
+                        self._add_finding(i, "Evasive XSS - Proxy set trap with dangerous sink",
+                                          VulnCategory.XSS, Severity.CRITICAL, "HIGH",
+                                          "Proxy handler 'set' trap contains dangerous sink. "
+                                          "Any property assignment like proxy.x = data triggers code execution.")
+
+                # Check for apply trap (for function proxies)
+                apply_trap_match = re.search(r'apply\s*:\s*(?:\([^)]*\)|function\s*\([^)]*\))\s*(?:=>)?\s*\{?([^}]*(?:\{[^}]*\})?[^}]*)\}?', proxy_context, re.DOTALL)
+                if apply_trap_match:
+                    trap_body = apply_trap_match.group(1)
+                    dangerous_in_apply = re.search(r'eval\s*\(|Function\s*\(|innerHTML|outerHTML', trap_body)
+                    if dangerous_in_apply:
+                        self._add_finding(i, "Evasive XSS - Proxy apply trap with dangerous sink",
+                                          VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH",
+                                          "Proxy handler 'apply' trap contains dangerous sink. "
+                                          "Calling the proxy as a function executes malicious code.")
+
 
 class JavaAnalyzer:
     """
@@ -4111,20 +4182,56 @@ class JavaAnalyzer:
                                       "User-controlled JNDI lookup can lead to RCE (Log4Shell-style).")
 
     def _check_script_engine(self):
-        """Check for script engine code injection."""
+        """Check for script engine code injection, including Base64-decoded payloads."""
+        # Track Base64 decoded variables for detecting obfuscated code execution
+        base64_decoded_vars = set()
+
         for i, line in enumerate(self.source_lines, 1):
             stripped = line.strip()
             if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
                 continue
 
-            # ScriptEngine.eval
+            # Track Base64 decoding that might flow to script engine
+            # Pattern: String decoded = new String(Base64.getDecoder().decode(input))
+            if re.search(r'Base64\s*\.\s*getDecoder\s*\(\s*\)\s*\.\s*decode\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                # Extract the result variable if present
+                var_match = re.search(r'(?:String|byte\s*\[\s*\]|var)\s+(\w+)\s*=', line)
+                if var_match:
+                    base64_decoded_vars.add(var_match.group(1))
+                    if is_tainted:
+                        # Check if this flows to ScriptEngine in nearby lines
+                        context = '\n'.join(self.source_lines[i-1:min(len(self.source_lines), i+10)])
+                        if re.search(r'ScriptEngine|\.eval\s*\(', context):
+                            self._add_finding(i, "Code Injection - Base64 decoded data flows to ScriptEngine",
+                                              VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                              "User input Base64-decoded then executed via ScriptEngine. "
+                                              "Attacker can encode malicious script to evade detection.")
+
+            # Track new String(decoded) - propagate base64 tracking
+            new_string_match = re.search(r'(?:String)\s+(\w+)\s*=\s*new\s+String\s*\(\s*(\w+)', line)
+            if new_string_match:
+                result_var = new_string_match.group(1)
+                source_var = new_string_match.group(2)
+                if source_var in base64_decoded_vars:
+                    base64_decoded_vars.add(result_var)
+
+            # ScriptEngine.eval - enhanced detection
             if re.search(r'ScriptEngine|\.eval\s*\(', line):
                 is_tainted, taint_var = self._is_tainted(line)
                 context = '\n'.join(self.source_lines[max(0, i-5):i+1])
                 has_script_engine = re.search(r'ScriptEngine|getEngineByName', context)
 
+                # Check if any Base64 decoded var is used in eval
+                uses_decoded = any(re.search(rf'\b{re.escape(var)}\b', line) for var in base64_decoded_vars)
+
                 if has_script_engine:
-                    if is_tainted:
+                    if uses_decoded:
+                        self._add_finding(i, "Code Injection - ScriptEngine.eval with Base64-decoded payload",
+                                          VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH",
+                                          description="ScriptEngine.eval() executes Base64-decoded data. "
+                                                      "Obfuscation technique to hide malicious scripts.")
+                    elif is_tainted:
                         self._add_finding(i, "Code Injection - ScriptEngine.eval with tainted data",
                                           VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
                                           "User-controlled data in ScriptEngine.eval() enables code execution.")
@@ -4132,6 +4239,22 @@ class JavaAnalyzer:
                         self._add_finding(i, "Code Injection - ScriptEngine.eval usage",
                                           VulnCategory.CODE_INJECTION, Severity.HIGH, "MEDIUM",
                                           description="ScriptEngine.eval() detected. Verify input is not user-controlled.")
+
+            # Detect ScriptEngineManager chain pattern
+            # Pattern: new ScriptEngineManager().getEngineByName("javascript").eval(...)
+            if re.search(r'ScriptEngineManager\s*\(\s*\)\s*\.\s*getEngineByName\s*\([^)]+\)\s*\.\s*eval\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "Code Injection - Inline ScriptEngine chain with tainted data",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "Inline ScriptEngineManager().getEngineByName().eval() with user data. "
+                                      "Direct code execution path.")
+                else:
+                    uses_decoded = any(re.search(rf'\b{re.escape(var)}\b', line) for var in base64_decoded_vars)
+                    if uses_decoded:
+                        self._add_finding(i, "Code Injection - Inline ScriptEngine chain with decoded payload",
+                                          VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH",
+                                          description="Inline ScriptEngineManager chain executes decoded payload.")
 
     def _check_reflection_injection(self):
         """Check for reflection-based injection."""
@@ -4370,6 +4493,7 @@ class PHPAnalyzer:
     def analyze(self) -> List[Finding]:
         self._check_sql_injection()
         self._check_command_injection()
+        self._check_strrev_evasion()
         self._check_code_injection()
         self._check_file_inclusion()
         self._check_deserialization()
@@ -4397,7 +4521,10 @@ class PHPAnalyzer:
 
     def _check_sql_injection(self):
         sql_funcs = r'(?:mysql_query|mysqli_query|pg_query|sqlite_query|mssql_query|odbc_exec|->query|->prepare|->exec)'
-        sql_keywords = r'(?:SELECT|INSERT|UPDATE|DELETE|DROP|UNION|FROM|WHERE)'
+        # Use word boundaries and exclude common false positives like variable names $where
+        sql_keywords = r'(?<!\$)\b(?:SELECT|INSERT|UPDATE|DELETE|DROP|UNION)\b'
+        # For FROM and WHERE, require them to be in a string context or followed by typical SQL patterns
+        sql_from_where = r'["\'].*\b(?:FROM|WHERE)\b.*["\']'
 
         # Laravel/Eloquent ORM safe patterns - these use parameterized queries
         eloquent_safe_patterns = [
@@ -4444,11 +4571,15 @@ class PHPAnalyzer:
                 continue
 
             # Direct query with concatenation
-            if re.search(sql_funcs, line) or re.search(sql_keywords, line, re.IGNORECASE):
+            has_sql_func = re.search(sql_funcs, line)
+            has_sql_keyword = re.search(sql_keywords, line, re.IGNORECASE)
+            has_sql_from_where = re.search(sql_from_where, line, re.IGNORECASE)
+
+            if has_sql_func or has_sql_keyword or has_sql_from_where:
                 is_tainted, taint_var = self._is_tainted(line)
                 has_concat = '.' in line or '+' in line or re.search(r'\$\w+', line)
 
-                if is_tainted and (re.search(sql_funcs, line) or re.search(sql_keywords, line, re.IGNORECASE)):
+                if is_tainted and (has_sql_func or has_sql_keyword or has_sql_from_where):
                     self._add_finding(i, "SQL Injection - Query with tainted data",
                                       VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
                                       "User input directly in SQL query.")
@@ -4539,6 +4670,73 @@ class PHPAnalyzer:
                         self._add_finding(i, "Command Injection - Shell execution pattern",
                                           VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
                                           description="Shell with -c flag pattern detected.")
+
+    def _check_strrev_evasion(self):
+        """
+        Detect strrev()-based evasion for hiding dangerous function names.
+        Examples: $f = strrev("urhtssap"); $f($input);  // passthru($input)
+        """
+        # Lookup table: dangerous function names reversed
+        dangerous_reversed = {
+            'urhtssap': 'passthru',
+            'metsys': 'system',
+            'cexe': 'exec',
+            'cexe_llehs': 'shell_exec',
+            'lave': 'eval',
+            'nepo_corp': 'proc_open',
+            'nepop': 'popen',
+            'cexe_lntcp': 'pcntl_exec',
+            'edulcni': 'include',
+            'eriuqer': 'require',
+            'tropssap': 'passthru',  # Common typo variant
+        }
+
+        # Track variables assigned via strrev()
+        strrev_vars = {}  # var_name -> (line_num, resolved_func)
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('#'):
+                continue
+
+            # Detect: $var = strrev("reversed_string")
+            strrev_match = re.search(r'\$(\w+)\s*=\s*strrev\s*\(\s*["\'](\w+)["\']\s*\)', line)
+            if strrev_match:
+                var_name = strrev_match.group(1)
+                reversed_str = strrev_match.group(2)
+                # Check if it's a known dangerous function
+                if reversed_str in dangerous_reversed:
+                    resolved = dangerous_reversed[reversed_str]
+                    strrev_vars[var_name] = (i, resolved)
+                    self._add_finding(i, f"Code Evasion - strrev() hides '{resolved}'",
+                                      VulnCategory.CODE_INJECTION, Severity.HIGH, "HIGH",
+                                      description=f"strrev('{reversed_str}') decodes to dangerous function '{resolved}'.")
+                else:
+                    # Reverse it manually and check
+                    manually_reversed = reversed_str[::-1]
+                    if manually_reversed.lower() in ['system', 'exec', 'passthru', 'shell_exec', 'eval',
+                                                      'popen', 'proc_open', 'pcntl_exec', 'include', 'require']:
+                        strrev_vars[var_name] = (i, manually_reversed)
+                        self._add_finding(i, f"Code Evasion - strrev() hides '{manually_reversed}'",
+                                          VulnCategory.CODE_INJECTION, Severity.HIGH, "HIGH",
+                                          description=f"strrev('{reversed_str}') decodes to dangerous function '{manually_reversed}'.")
+
+            # Detect variable function call: $var($args) where $var was set via strrev
+            var_func_call = re.search(r'\$(\w+)\s*\(\s*([^)]*)\s*\)', line)
+            if var_func_call:
+                var_name = var_func_call.group(1)
+                args = var_func_call.group(2)
+                if var_name in strrev_vars:
+                    orig_line, resolved_func = strrev_vars[var_name]
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted:
+                        self._add_finding(i, f"Command Injection - strrev-hidden {resolved_func}() with tainted args",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                          f"Variable function ${var_name}() resolves to {resolved_func}() (via strrev at line {orig_line}). User input passed as argument.")
+                    else:
+                        self._add_finding(i, f"Command Injection - strrev-hidden {resolved_func}() call",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                          description=f"Variable function ${var_name}() resolves to {resolved_func}() (hidden via strrev at line {orig_line}).")
 
     def _check_code_injection(self):
         for i, line in enumerate(self.source_lines, 1):
@@ -4665,11 +4863,13 @@ class PHPAnalyzer:
         ]
 
         # Tainted variable output
+        # Note: sprintf returns a string (not output), so only flag printf/vprintf which output directly
         tainted_output = [
             (r'\becho\s+\$\w+', "XSS - Echo with variable"),
             (r'\bprint\s+\$\w+', "XSS - Print with variable"),
             (r'<\?=\s*\$\w+', "XSS - Short echo with variable"),
-            (r'printf\s*\([^,]+,\s*\$', "XSS - printf with variable"),
+            (r'(?<!s)(?<!vs)printf\s*\([^,]+,\s*\$', "XSS - printf with variable"),  # Exclude sprintf/vsprintf
+            (r'\bvprintf\s*\([^,]+,\s*\$', "XSS - vprintf with variable"),
         ]
 
         # HTML context patterns
@@ -4856,6 +5056,7 @@ class CSharpAnalyzer:
     def analyze(self) -> List[Finding]:
         self._check_sql_injection()
         self._check_command_injection()
+        self._check_linq_taint_tunnel()
         self._check_deserialization()
         self._check_path_traversal()
         self._check_xxe()
@@ -5081,6 +5282,87 @@ class CSharpAnalyzer:
                 elif line.strip() == '}' and i > destructor_line + 1:
                     # Simple heuristic: closing brace likely ends the destructor
                     in_destructor = False
+
+    def _check_linq_taint_tunnel(self):
+        """
+        Detect LINQ-based taint tunneling where user input flows through LINQ operations
+        to command execution sinks.
+        Example: userInputList.Select(x => $"/c {x}").ToList() -> Process.Start(Arguments = list[0])
+        """
+        # Track collections that contain tainted data
+        tainted_collections = {}  # var_name -> line_num
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//'):
+                continue
+
+            # Detect List/collection initialization with tainted data
+            # Pattern: new List<string> { input } or var list = new List<...>()
+            list_init_match = re.search(r'(?:var|List<[^>]+>)\s+(\w+)\s*=\s*new\s+List<[^>]+>\s*(?:\{([^}]*)\}|\(\s*\))', line)
+            if list_init_match:
+                var_name = list_init_match.group(1)
+                init_content = list_init_match.group(2) or ''
+                is_tainted, taint_var = self._is_tainted(init_content) if init_content else (False, None)
+                if is_tainted:
+                    tainted_collections[var_name] = i
+
+            # Detect .Add() to collection with tainted data
+            add_match = re.search(r'(\w+)\.Add\s*\(\s*([^)]+)\s*\)', line)
+            if add_match:
+                collection_name = add_match.group(1)
+                added_value = add_match.group(2)
+                is_tainted, taint_var = self._is_tainted(added_value)
+                if is_tainted:
+                    tainted_collections[collection_name] = i
+
+            # Detect LINQ Select with lambda that transforms data for command execution
+            # Pattern: collection.Select(x => $"/c {x}") or .Select(x => "/c " + x)
+            select_match = re.search(r'(\w+)\s*\.\s*Select\s*\(\s*(\w+)\s*=>\s*(.+?)\)', line)
+            if select_match:
+                source_collection = select_match.group(1)
+                lambda_param = select_match.group(2)
+                lambda_body = select_match.group(3)
+
+                # Check if source is tainted or has dangerous patterns in lambda
+                source_tainted = source_collection in tainted_collections
+                has_shell_pattern = re.search(r'/c\s|cmd|powershell|-Command|-c\s', lambda_body, re.IGNORECASE)
+                has_interpolation = re.search(rf'\$".*\{{{lambda_param}\}}|"\s*\+\s*{lambda_param}|{lambda_param}\s*\+', lambda_body)
+
+                if source_tainted and has_shell_pattern and has_interpolation:
+                    self._add_finding(i, "Command Injection - LINQ Select transforms tainted data for shell",
+                                      VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH",
+                                      description=f"LINQ .Select() transforms tainted data from '{source_collection}' into shell commands. "
+                                                  f"Pattern: {lambda_body}")
+                elif has_shell_pattern and has_interpolation:
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted:
+                        self._add_finding(i, "Command Injection - LINQ Select builds shell commands",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH", taint_var,
+                                          description="LINQ .Select() lambda builds shell command patterns with variable data.")
+
+            # Detect chained LINQ to Process.Start pattern
+            # Pattern: .Select(...).FirstOrDefault() or .First() used in Process.Start
+            if re.search(r'\.(FirstOrDefault|First|Single|Last)\s*\(\s*\)', line):
+                context = '\n'.join(self.source_lines[max(0, i-5):min(len(self.source_lines), i+5)])
+                if re.search(r'\.Select\s*\(', context) and re.search(r'Process\.Start|ProcessStartInfo', context):
+                    is_tainted, taint_var = self._is_tainted(context)
+                    if is_tainted:
+                        self._add_finding(i, "Command Injection - LINQ result flows to Process.Start",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                          description="LINQ operation result (potentially transformed tainted data) flows to Process.Start.")
+
+            # Detect aggregation patterns that might hide taint: .Aggregate(), .Join(), etc.
+            if re.search(r'\.(Aggregate|Join|Concat)\s*\(', line):
+                context = '\n'.join(self.source_lines[max(0, i-5):i+1])
+                is_tainted, taint_var = self._is_tainted(context)
+                if is_tainted:
+                    # Check if result flows to dangerous sink
+                    forward_context = '\n'.join(self.source_lines[i-1:min(len(self.source_lines), i+10)])
+                    if re.search(r'Process\.Start|Arguments\s*=|ProcessStartInfo', forward_context):
+                        self._add_finding(i, "Command Injection - LINQ aggregation tunnels tainted data to sink",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH", taint_var,
+                                          description="LINQ aggregation method may tunnel tainted data to command execution.")
 
     def _analyze_psi_block(self, start_line: int, block_text: str, system_tools: str):
         """Analyze a ProcessStartInfo object initializer block for command injection."""
@@ -5490,6 +5772,32 @@ class CSharpAnalyzer:
                     description="Web.config disables ViewState MAC globally. All pages are vulnerable "
                     "to ViewState deserialization attacks. This is a server-wide RCE vector."
                 )
+
+    def _check_xss(self):
+        """Check for XSS vulnerabilities in C# code."""
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//'):
+                continue
+
+            # Razor Html.Raw - bypasses encoding
+            if re.search(r'@?Html\.Raw\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "XSS - Html.Raw with tainted data",
+                                      VulnCategory.XSS, Severity.CRITICAL, "HIGH", taint_var,
+                                      "Html.Raw() bypasses encoding. User input rendered as raw HTML.")
+                else:
+                    self._add_finding(i, "XSS - Html.Raw usage",
+                                      VulnCategory.XSS, Severity.HIGH, "MEDIUM",
+                                      description="Html.Raw() bypasses encoding. Verify input source.")
+
+            # Response.Write with potential XSS
+            if re.search(r'Response\.Write\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "XSS - Response.Write with tainted data",
+                                      VulnCategory.XSS, Severity.CRITICAL, "HIGH", taint_var,
+                                      "Unencoded user input in Response.Write().")
 
 
 class ASPNetConfigAnalyzer:
@@ -6371,15 +6679,47 @@ class ASTScanner:
         '.erb': 'ruby',
     }
 
+    # Directories to exclude by default
     DEFAULT_EXCLUDES = {
         'node_modules', '.git', '__pycache__', 'venv', 'env', '.venv',
         'vendor', 'dist', 'build', '.tox', '.pytest_cache', 'site-packages',
-        '.eggs', '*.egg-info', 'htmlcov', '.mypy_cache',
+        '.eggs', '*.egg-info', 'htmlcov', '.mypy_cache', 'bower_components',
+        'jspm_packages', '.nuget', 'packages', 'lib', 'libs', 'third_party',
+        'third-party', 'external', 'externals', '.bundle', 'Pods',
     }
 
-    def __init__(self, verbose: bool = False, categories: Optional[List[str]] = None):
+    # File patterns to exclude (minified, vendor libraries, etc.)
+    DEFAULT_FILE_EXCLUDES = {
+        # Minified files
+        '.min.js', '.min.css', '.bundle.js', '.chunk.js',
+        '-min.js', '-min.css', '.prod.js', '.production.js',
+        # Common vendor libraries
+        'jquery', 'bootstrap', 'angular', 'react', 'vue', 'ember',
+        'backbone', 'lodash', 'underscore', 'moment', 'axios',
+        'popper', 'd3', 'chart', 'highcharts', 'three',
+        'socket.io', 'knockout', 'polymer', 'mootools', 'prototype',
+        'dojo', 'ext-all', 'sencha', 'kendo', 'telerik',
+        'tinymce', 'ckeditor', 'codemirror', 'ace-builds',
+        'select2', 'chosen', 'datatables', 'fullcalendar',
+        'sweetalert', 'toastr', 'bootbox', 'magnific-popup',
+        'slick', 'owl.carousel', 'swiper', 'photoswipe',
+        'leaflet', 'mapbox', 'google-maps', 'openlayers',
+        'hammer', 'modernizr', 'respond', 'html5shiv',
+        'normalize.css', 'reset.css', 'sanitize.css',
+        # Font/icon libraries
+        'fontawesome', 'font-awesome', 'ionicons', 'material-icons',
+        'glyphicons', 'feather', 'bootstrap-icons',
+        # Polyfills and shims
+        'polyfill', 'core-js', 'babel-polyfill', 'es5-shim', 'es6-shim',
+        # Build artifacts
+        'webpack-runtime', 'runtime~', 'vendors~', 'vendor.',
+    }
+
+    def __init__(self, verbose: bool = False, categories: Optional[List[str]] = None,
+                 scan_all: bool = False):
         self.verbose = verbose
         self.categories = categories
+        self.scan_all = scan_all
         self.all_findings: List[Finding] = []
         self.files_scanned = 0
         self.parse_errors = 0
@@ -6395,10 +6735,21 @@ class ASTScanner:
         if file_path.suffix.lower() not in self.SUPPORTED_EXTENSIONS:
             return False
 
-        # Check exclusions
+        # If scan_all is enabled, skip exclusion checks
+        if self.scan_all:
+            return True
+
+        # Check directory exclusions
         parts = file_path.parts
         for exclude in self.DEFAULT_EXCLUDES:
             if any(exclude.replace('*', '') in part for part in parts):
+                return False
+
+        # Check file pattern exclusions (minified, vendor libraries)
+        filename_lower = file_path.name.lower()
+        for pattern in self.DEFAULT_FILE_EXCLUDES:
+            if pattern in filename_lower:
+                self.log(f"Skipping vendor/minified file: {file_path.name}")
                 return False
 
         return True
@@ -6558,8 +6909,9 @@ class ASTScanner:
         findings = []
 
         for root, dirs, files in os.walk(directory):
-            # Skip excluded directories
-            dirs[:] = [d for d in dirs if d not in self.DEFAULT_EXCLUDES]
+            # Skip excluded directories (unless scan_all is enabled)
+            if not self.scan_all:
+                dirs[:] = [d for d in dirs if d not in self.DEFAULT_EXCLUDES]
 
             for file in files:
                 file_path = Path(root) / file
@@ -6728,6 +7080,8 @@ def main():
     parser.add_argument('-o', '--output-file', help='Save report to file')
     parser.add_argument('--min-confidence', choices=['HIGH', 'MEDIUM', 'LOW'], default='LOW',
                         help='Minimum confidence level to report (default: LOW)')
+    parser.add_argument('--scan-all', action='store_true',
+                        help='Scan all files including vendor libraries and minified files')
 
     args = parser.parse_args()
 
@@ -6746,7 +7100,8 @@ def main():
                       Taint Tracking | Multi-Language | Deep Analysis
     """)
 
-    scanner = ASTScanner(verbose=args.verbose, categories=args.category)
+    scanner = ASTScanner(verbose=args.verbose, categories=args.category,
+                         scan_all=args.scan_all)
     findings = scanner.scan(args.target)
 
     # Filter by confidence

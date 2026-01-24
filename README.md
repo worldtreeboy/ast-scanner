@@ -81,6 +81,12 @@ A powerful cross-platform static analysis toolkit for detecting security vulnera
 
 | Feature | Description | Languages |
 |---------|-------------|-----------|
+| **Logic-Based Evasion Detection** | Advanced patterns that hide source-to-sink connections | Multi-lang |
+| **Python getattr Shadow** | getattr() with user-controlled attribute names | Python |
+| **PHP strrev Evasion** | strrev("urhtssap") → "passthru" variable function calls | PHP |
+| **C# LINQ Taint Tunnel** | Collection.Select(x => $"/c {x}") to Process.Start | C# |
+| **JS Proxy Trap Detection** | Proxy get/set handlers with eval, innerHTML sinks | JavaScript |
+| **Java ScriptEngine + Base64** | Base64.decode() flowing to ScriptEngine.eval() | Java |
 | **Destructor Command Injection** | Detects delayed execution attacks via C# finalizers | C# |
 | **XSLT XXE Detection** | XslCompiledTransform with XsltSettings.TrustedXslt | C# |
 | **ViewState Vulnerability Scanner** | EnableViewStateMac, ViewStateEncryptionMode analysis | C#, ASP.NET |
@@ -245,6 +251,27 @@ python3 ast-scanner.py project/ --output json -o report.json
 
 # Verbose mode for debugging
 python3 ast-scanner.py project/ -v
+```
+
+### File Exclusions
+
+By default, the scanner excludes vendor libraries and minified files to reduce noise:
+
+**Excluded by default:**
+- Minified files: `*.min.js`, `*.min.css`, `*.bundle.js`, `*.chunk.js`
+- Vendor libraries: jquery, bootstrap, angular, react, vue, lodash, moment, axios, etc.
+- Directories: `node_modules`, `vendor`, `dist`, `build`, `bower_components`, etc.
+
+```bash
+# Normal scan (excludes vendor/minified by default)
+python3 ast-scanner.py project/
+
+# Scan everything including vendor files
+python3 ast-scanner.py project/ --scan-all
+
+# Verbose mode shows skipped files
+python3 ast-scanner.py project/ -v
+# Output: [*] Skipping vendor/minified file: bootstrap.min.js
 ```
 
 ---
@@ -583,6 +610,77 @@ Engine.Razor.RunCompile(userTemplate, "key", null, model);
 string query = String.Format("SELECT * FROM users WHERE id = {0}", userId);
 ```
 
+### Logic-Based Evasion Detection
+
+Detects sophisticated patterns that hide the connection between source and sink using language-specific features:
+
+**Python: getattr Shadow Attack**
+```python
+# DETECTED: getattr with user-controlled attribute name
+func_name = user_data.get("action")  # User controls function name
+method = getattr(module, func_name)   # Can access any attribute/method
+method(user_data.get("arg"))          # Execute arbitrary code
+
+# DETECTED: getattr with tainted variable from request
+method_name = request.args.get('method')
+handler = getattr(os, method_name)    # Attacker can call os.system, etc.
+```
+
+**PHP: strrev() Variable Function Evasion**
+```php
+// DETECTED: strrev() hides 'passthru'
+$func = strrev("urhtssap");  // Decodes to "passthru"
+$func($_GET['cmd']);         // Variable function executes command
+
+// DETECTED: strrev() hides 'system'
+$exec = strrev("metsys");    // Decodes to "system"
+$exec($user_input);          // Command injection via variable function
+
+// DETECTED: strrev() hides 'shell_exec'
+$shell = strrev("cexe_llehs");  // Decodes to "shell_exec"
+```
+
+**C#: LINQ Taint Tunnel**
+```csharp
+// DETECTED: LINQ Select transforms tainted data for shell execution
+var commands = new List<string> { userInput };
+var shellCmds = commands.Select(x => $"/c {x}").ToList();
+Process.Start("cmd.exe", shellCmds.FirstOrDefault());
+
+// DETECTED: LINQ result flows to Process.Start
+var result = userInputs
+    .Where(x => x.Length > 0)
+    .Select(x => $"-Command {x}")
+    .FirstOrDefault();
+Process.Start("powershell.exe", result);
+```
+
+**JavaScript: Proxy Trap Evasion**
+```javascript
+// DETECTED: Proxy get trap with eval - any property access triggers eval
+const evasiveProxy = new Proxy({}, {
+    get: (target, prop) => eval(sessionStorage.getItem(prop))
+});
+evasiveProxy.anything;  // Triggers eval
+
+// DETECTED: Proxy set trap with innerHTML
+const proxy = new Proxy({}, {
+    set: (t, p, v) => { element.innerHTML = v; return true; }
+});
+proxy.content = location.hash;  // Triggers innerHTML assignment
+```
+
+**Java: Base64 + ScriptEngine Evasion**
+```java
+// DETECTED: Base64 decoded data flows to ScriptEngine
+byte[] decoded = Base64.getDecoder().decode(userInput);
+String script = new String(decoded);
+engine.eval(script);  // Attacker encodes malicious script to evade detection
+
+// DETECTED: Inline ScriptEngine chain with tainted data
+new ScriptEngineManager().getEngineByName("js").eval(userInput);
+```
+
 ### ProcessStartInfo Block Analysis
 
 ```csharp
@@ -663,7 +761,7 @@ FILE: web.config
 ```
 usage: ast-scanner.py [-h] [-v] [-c CATEGORY] [--output {text,json}]
                       [-o OUTPUT_FILE] [--min-confidence {HIGH,MEDIUM,LOW}]
-                      target
+                      [--scan-all] target
 
 Options:
   target                    File or directory to scan
@@ -672,6 +770,7 @@ Options:
   --output {text,json}      Output format
   -o, --output-file FILE    Save report to file
   --min-confidence LEVEL    Minimum confidence (HIGH, MEDIUM, LOW)
+  --scan-all                Include vendor libraries and minified files
 ```
 
 ### Categories
@@ -769,6 +868,11 @@ vuln-scanner/
 └── test-files/         # Sample vulnerable configurations for testing
     ├── sanitization-bypass.js        # JavaScript - Weak sanitization patterns
     ├── evasive-xss.js                # JavaScript - Advanced evasion patterns
+    ├── evasive-proxy.js              # JavaScript - Proxy trap evasion patterns
+    ├── evasive-python.py             # Python - getattr shadow attack patterns
+    ├── evasive-php.php               # PHP - strrev variable function evasion
+    ├── evasive-csharp.cs             # C# - LINQ taint tunnel patterns
+    ├── evasive-java.java             # Java - Base64 + ScriptEngine evasion
     ├── xss-test.js                   # JavaScript - DOM-based & Reflected XSS
     ├── xss-test.php                  # PHP - Superglobal & tainted XSS
     ├── web.config                    # ASP.NET - ViewState, MachineKey
@@ -790,6 +894,11 @@ The `test-files/` directory contains **intentionally vulnerable** configuration 
 |------|-----------|---------------------|
 | `sanitization-bypass.js` | JavaScript | Weak replace(), blacklist filters, nested payloads |
 | `evasive-xss.js` | JavaScript | ASCII encoding, prototype abuse, async taint, eval aliasing |
+| `evasive-proxy.js` | JavaScript | Proxy get/set traps with eval, innerHTML, document.write |
+| `evasive-python.py` | Python | getattr with user-controlled attribute names |
+| `evasive-php.php` | PHP | strrev() hides dangerous functions, variable function calls |
+| `evasive-csharp.cs` | C# | LINQ Select/Aggregate/Join taint tunneling to Process.Start |
+| `evasive-java.java` | Java | Base64 decoded payloads, ScriptEngine.eval chains |
 | `xss-test.js` | JavaScript | DOM-based XSS, Reflected XSS, jQuery, React, Angular, Vue |
 | `xss-test.php` | PHP | Direct superglobal output, tainted variable XSS |
 | `web.config` | ASP.NET | ViewState MAC disabled, MachineKey validation=None |
