@@ -5473,10 +5473,23 @@ class CSharpAnalyzer:
             for pattern in deser_patterns:
                 if re.search(pattern, line):
                     is_tainted, taint_var = self._is_tainted(line)
-                    if 'BinaryFormatter' in line or 'NetDataContractSerializer' in line:
-                        self._add_finding(i, f"Insecure Deserialization - {pattern.split('|')[0]}",
-                                          VulnCategory.DESERIALIZATION, Severity.CRITICAL, "HIGH", taint_var,
-                                          "Dangerous deserializer can lead to RCE.")
+
+                    # Dangerous deserializers that always lead to RCE with untrusted data
+                    dangerous_formatters = ['BinaryFormatter', 'NetDataContractSerializer',
+                                            'LosFormatter', 'ObjectStateFormatter', 'SoapFormatter']
+
+                    matched_formatter = next((f for f in dangerous_formatters if f in line), None)
+                    if matched_formatter:
+                        # ViewState-specific formatters get special messaging
+                        if matched_formatter in ['LosFormatter', 'ObjectStateFormatter']:
+                            self._add_finding(i, f"Insecure Deserialization - {matched_formatter} (ViewState)",
+                                              VulnCategory.DESERIALIZATION, Severity.CRITICAL, "HIGH", taint_var,
+                                              f"{matched_formatter} deserializes ViewState objects. "
+                                              "Without MachineKey validation, attackers can achieve RCE via ysoserial.net payloads.")
+                        else:
+                            self._add_finding(i, f"Insecure Deserialization - {matched_formatter}",
+                                              VulnCategory.DESERIALIZATION, Severity.CRITICAL, "HIGH", taint_var,
+                                              "Dangerous deserializer can lead to RCE.")
                     elif 'JsonConvert.DeserializeObject' in line:
                         # Check for dangerous TypeNameHandling in context
                         context = '\n'.join(self.source_lines[max(0, i-10):i+1])
