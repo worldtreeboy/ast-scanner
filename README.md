@@ -597,12 +597,35 @@ vuln-scanner/
 ├── vuln-scanner.py     # Regex-based pattern scanner
 ├── README.md           # Documentation
 ├── LICENSE             # MIT License
-└── test-files/         # Sample vulnerable code for testing
-    ├── express-cmdi.js
-    ├── ghost.cs
-    ├── ghost.php
-    └── ghost.rb
+└── test-files/         # Sample vulnerable configurations for testing
+    ├── web.config                    # ASP.NET - ViewState, MachineKey
+    ├── django-settings.py            # Django - DEBUG, SECRET_KEY, Pickle
+    ├── flask-config.py               # Flask - Debug, hardcoded keys
+    ├── express-config.js             # Express.js - Sessions, CORS, secrets
+    ├── typescript-config.ts          # TypeScript - Injection patterns
+    ├── rails-config.rb               # Ruby on Rails - Mass assignment, secrets
+    ├── spring-application.properties # Spring Boot - Actuator, H2 console
+    ├── php.ini                       # PHP - allow_url_include, display_errors
+    └── nginx.conf                    # Nginx - Path traversal, SSRF proxy
 ```
+
+### Test Files
+
+The `test-files/` directory contains **intentionally vulnerable** configuration samples for testing the scanner. These demonstrate real-world security misconfigurations:
+
+| File | Framework | Key Vulnerabilities |
+|------|-----------|---------------------|
+| `web.config` | ASP.NET | ViewState MAC disabled, MachineKey validation=None |
+| `django-settings.py` | Django | DEBUG=True, PickleSerializer, hardcoded SECRET_KEY |
+| `flask-config.py` | Flask | Debug mode, hardcoded credentials, insecure cookies |
+| `express-config.js` | Express.js | Weak sessions, CORS *, exposed stack traces |
+| `typescript-config.ts` | TypeScript | Command injection, SQLi, prototype pollution |
+| `rails-config.rb` | Rails | Mass assignment, YAML.load, hardcoded secrets |
+| `spring-application.properties` | Spring | Actuator exposed, H2 console, credentials |
+| `php.ini` | PHP | allow_url_include, disabled functions, display_errors |
+| `nginx.conf` | Nginx | Path traversal via alias, SSRF proxy_pass |
+
+> **Note:** These files are for testing only. The scanner works on any real code you provide.
 
 ---
 
