@@ -623,14 +623,23 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         category=VulnCategory.CODE_INJECTION,
         patterns=[
             r'Class\.forName\s*\(\s*.*request',
-            r'\.newInstance\s*\(\s*\)',
             r'Method\.invoke\s*\(',
             r'\.getMethod\s*\(\s*.*request',
-            r'\.getDeclaredMethod\s*\(',
+            r'\.getDeclaredMethod\s*\(\s*[^)]*\+',  # Only with concatenation
             r'Constructor\.newInstance\s*\(',
         ],
         severity=Severity.HIGH,
         languages=[".java", ".kt", ".scala"],
+        false_positive_patterns=[
+            r'DocumentBuilderFactory',
+            r'SAXParserFactory',
+            r'TransformerFactory',
+            r'XMLInputFactory',
+            r'XPathFactory',
+            r'SchemaFactory',
+            r'JAXBContext',
+            r'SAXTransformerFactory',
+        ],
     ),
     VulnerabilityPattern(
         name="Code Injection - Java JNDI",
@@ -1479,6 +1488,10 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'@validator',
             r'@field_validator',
             r'Schema\s*\(',
+            r'jsonify\s*\(',  # Flask jsonify with **data is safe
+            r'return\s+\{.*\*\*',  # Dict literal with **unpacking is common
+            r'dict\s*\(',  # dict() with **unpacking
+            r'\.format\s*\(',  # string format
         ],
     ),
 
@@ -2211,6 +2224,16 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             # ActiveRecord
             r'\.where\s*\(\s*["\'].*#\{',
             r'\.order\s*\(\s*["\'].*#\{',
+            # Arel.sql() - Rails raw SQL (CRITICAL: commonly misused)
+            r'Arel\.sql\s*\(\s*["\'].*#\{',  # Arel.sql("#{var}")
+            r'Arel\.sql\s*\(\s*["\'].*\+',   # Arel.sql("SELECT " + var)
+            r'Arel\.sql\s*\(\s*\w+\s*\)',    # Arel.sql(user_var)
+            r'\.order\s*\(\s*Arel\.sql\s*\(\s*["\'].*#\{',  # .order(Arel.sql("#{sort_key}"))
+            r'\.where\s*\(\s*Arel\.sql\s*\(\s*["\'].*#\{',  # .where(Arel.sql("#{condition}"))
+            r'\.select\s*\(\s*Arel\.sql\s*\(\s*["\'].*#\{', # .select(Arel.sql("#{columns}"))
+            r'\.joins\s*\(\s*Arel\.sql\s*\(\s*["\'].*#\{',  # .joins(Arel.sql("#{join}"))
+            r'\.group\s*\(\s*Arel\.sql\s*\(\s*["\'].*#\{',  # .group(Arel.sql("#{group_by}"))
+            r'\.having\s*\(\s*Arel\.sql\s*\(\s*["\'].*#\{', # .having(Arel.sql("#{having}"))
             # Hibernate HQL
             r'createQuery\s*\(\s*["\'].*\+\s*\w+',
             r'createNativeQuery\s*\(\s*["\'].*\+\s*\w+',
@@ -2222,6 +2245,46 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'\?\s*[,\)]',
             r'@Param',
             r'setParameter',
+        ],
+    ),
+
+    # =============================================================================
+    # AREL.SQL() SQL INJECTION - RAILS/RUBY SPECIFIC
+    # =============================================================================
+
+    VulnerabilityPattern(
+        name="SQL Injection - Arel.sql() with Unsanitized Input",
+        category=VulnCategory.SQL_INJECTION,
+        patterns=[
+            # Arel.sql with string interpolation - CRITICAL
+            r'Arel\.sql\s*\(\s*["\'][^"\']*#\{[^}]+\}',  # Arel.sql("...#{var}...")
+            r'Arel\.sql\s*\(\s*["\'][^"\']*\s*\+',        # Arel.sql("..." + var)
+
+            # Common dangerous usages with Arel.sql
+            r'\.order\s*\(\s*Arel\.sql\s*\(\s*["\'][^"\']*#\{',    # scope.order(Arel.sql("#{sort_key}"))
+            r'\.where\s*\(\s*Arel\.sql\s*\(\s*["\'][^"\']*#\{',    # scope.where(Arel.sql("#{cond}"))
+            r'\.select\s*\(\s*Arel\.sql\s*\(\s*["\'][^"\']*#\{',   # scope.select(Arel.sql("#{cols}"))
+            r'\.joins\s*\(\s*Arel\.sql\s*\(\s*["\'][^"\']*#\{',    # scope.joins(Arel.sql("#{join}"))
+            r'\.group\s*\(\s*Arel\.sql\s*\(\s*["\'][^"\']*#\{',    # scope.group(Arel.sql("#{group}"))
+            r'\.having\s*\(\s*Arel\.sql\s*\(\s*["\'][^"\']*#\{',   # scope.having(Arel.sql("#{having}"))
+            r'\.from\s*\(\s*Arel\.sql\s*\(\s*["\'][^"\']*#\{',     # scope.from(Arel.sql("#{table}"))
+
+            # Arel.sql with variable (no validation visible)
+            r'Arel\.sql\s*\(\s*(?:sort_key|sort_column|sort_field|order_by|order_column|column|field)\s*\)',
+
+            # Partial validation patterns (only direction validated, not column)
+            r'(?:asc|desc)["\'].*Arel\.sql\s*\(\s*["\'][^"\']*#\{',
+        ],
+        severity=Severity.CRITICAL,
+        languages=[".rb", ".erb", ".haml", ".slim"],
+        false_positive_patterns=[
+            # Whitelist-validated column names
+            r'(?:ALLOWED|VALID|SAFE|PERMITTED)_(?:COLUMNS|FIELDS|SORT)',
+            r'\.include\?\s*\(\s*(?:sort_key|sort_column|column)',
+            r'Array\s*\[.*\]\.include\?\s*\(',
+            r'%w\[.*\]\.include\?\s*\(',
+            # Constant usage
+            r'Arel\.sql\s*\(\s*[A-Z][A-Z_]+\s*\)',  # Arel.sql(CONSTANT)
         ],
     ),
 
@@ -4681,8 +4744,7 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
             r'freemarker\.template\.utility\.Execute',
             r'freemarker\.template\.utility\.ObjectConstructor',
             r'\?new\s*\(\s*\)',
-            r'\.getClassLoader',
-            r'\.newInstance\s*\(',
+            r'\.getClassLoader\s*\(\s*\)\.loadClass',
 
             # Velocity exploitation
             r'#set\s*\(\s*\$.*=.*getClass\s*\(',
@@ -6063,19 +6125,23 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         name="MyBatis SQL Injection (Java)",
         category=VulnCategory.SQL_INJECTION,
         patterns=[
-            # MyBatis ${} injection (vulnerable) vs #{} (safe)
-            r'\$\{[^}]+\}',  # ${} is vulnerable
+            # MyBatis ${} injection only in SQL contexts
+            r'(?:SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|AND|OR)\s+.*\$\{',
             r'ORDER\s+BY\s+\$\{',
             r'ORDER\s+BY\s+["\']\s*\+\s*\w+',
             r'GROUP\s+BY\s+\$\{',
             r'LIMIT\s+\$\{',
 
-            # Dynamic SQL building
+            # Dynamic SQL building in XML mappers
             r'<if\s+test=[^>]*>.*\$\{',
             r'<where>.*\$\{',
             r'<set>.*\$\{',
 
             # Annotation-based queries with concatenation
+            r'@Select\s*\(\s*["\'].*\$\{',
+            r'@Insert\s*\(\s*["\'].*\$\{',
+            r'@Update\s*\(\s*["\'].*\$\{',
+            r'@Delete\s*\(\s*["\'].*\$\{',
             r'@Select\s*\(\s*["\'].*\+',
             r'@Insert\s*\(\s*["\'].*\+',
             r'@Update\s*\(\s*["\'].*\+',
@@ -6086,6 +6152,10 @@ VULNERABILITY_PATTERNS: List[VulnerabilityPattern] = [
         false_positive_patterns=[
             r'#\{[^}]+\}',  # Safe placeholder
             r'//.*\$\{',
+            r'Template',  # Template strings
+            r'render',    # Render functions
+            r'Hello',     # String literals
+            r'message',   # Message templates
         ],
     ),
 
@@ -7913,15 +7983,58 @@ class VulnerabilityScanner:
         findings = []
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
+                content = f.read()
 
+            # For Python files, mark lines inside docstrings to skip them
+            skip_lines = set()
+            if extension == '.py':
+                skip_lines = self._get_docstring_lines(content)
+
+            lines = content.splitlines()
             for line_number, line in enumerate(lines, 1):
+                # Skip lines inside docstrings
+                if line_number in skip_lines:
+                    continue
                 findings.extend(self.scan_line(line, line_number, file_path, extension))
         except (IOError, PermissionError) as e:
             if self.verbose:
                 print(f"[!] Error reading {file_path}: {e}")
 
         return findings
+
+    def _get_docstring_lines(self, content: str) -> Set[int]:
+        """Get line numbers that are inside triple-quoted strings (docstrings)."""
+        skip_lines = set()
+        lines = content.splitlines()
+
+        in_docstring = False
+        docstring_char = None
+
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+
+            if not in_docstring:
+                # Check for docstring start
+                if stripped.startswith('"""') or stripped.startswith("'''"):
+                    docstring_char = stripped[:3]
+                    # Check if it ends on the same line
+                    rest = stripped[3:]
+                    if docstring_char in rest:
+                        # Single-line docstring - skip this line
+                        skip_lines.add(i)
+                    else:
+                        # Multi-line docstring starts
+                        in_docstring = True
+                        skip_lines.add(i)
+            else:
+                # Inside docstring - skip this line
+                skip_lines.add(i)
+                # Check for docstring end
+                if docstring_char in line:
+                    in_docstring = False
+                    docstring_char = None
+
+        return skip_lines
 
     def scan_directory(self, directory: str) -> List[Finding]:
         """Recursively scan directory"""

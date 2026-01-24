@@ -29,7 +29,6 @@ Vulnerability Categories:
 - Path Traversal - File operations with user-controlled paths
 - LFI/RFI - Local/Remote file inclusion (PHP)
 - XXE - XML External Entity injection
-- XSS - Cross-site scripting (reflected)
 - Authentication Bypass - Hardcoded credentials, weak comparisons
 """
 
@@ -69,7 +68,6 @@ class VulnCategory(Enum):
     XPATH_INJECTION = "XPath Injection"
     XXE = "XML External Entity"
     PATH_TRAVERSAL = "Path Traversal"
-    XSS = "Cross-Site Scripting"
     LFI_RFI = "Local/Remote File Inclusion"
     LDAP_INJECTION = "LDAP Injection"
 
@@ -128,7 +126,35 @@ PYTHON_TAINT_SOURCES = {
     'Query', 'Body', 'Form', 'File', 'Header', 'Cookie', 'Path',
     # General
     'input', 'sys.argv', 'os.environ', 'raw_input',
+    # Environment - os.environ.get() is a major taint source
+    'os.environ.get', 'os.getenv', 'environ.get',
 }
+
+# Dangerous modules where dynamic attribute access is suspicious
+DANGEROUS_MODULES = {
+    'subprocess': {'Popen', 'call', 'run', 'check_output', 'check_call',
+                   'getoutput', 'getstatusoutput'},
+    'os': {'system', 'popen', 'popen2', 'popen3', 'popen4', 'spawn', 'spawnl',
+           'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp',
+           'spawnvpe', 'exec', 'execl', 'execle', 'execlp', 'execlpe',
+           'execv', 'execve', 'execvp', 'execvpe'},
+    'builtins': {'eval', 'exec', 'compile', '__import__'},
+    'pickle': {'loads', 'load'},
+    'marshal': {'loads', 'load'},
+    'yaml': {'load', 'unsafe_load', 'full_load'},
+}
+
+# Shell execution patterns that indicate command injection
+SHELL_PATTERNS = [
+    # Unix shells
+    '/bin/sh', '/bin/bash', '/bin/zsh', '/bin/ksh', '/bin/csh', '/bin/tcsh',
+    '/usr/bin/sh', '/usr/bin/bash', '/usr/bin/zsh', '/usr/bin/env',
+    'sh', 'bash', 'zsh', 'ksh',
+    # Windows shells
+    'cmd.exe', 'cmd', 'powershell.exe', 'powershell', 'pwsh',
+]
+
+SHELL_FLAGS = ['-c', '/c', '/k', '-Command', '-EncodedCommand']
 
 PYTHON_TAINT_FUNCTIONS = {
     'input': 'user_input',
@@ -230,6 +256,10 @@ class PythonTaintTracker(ast.NodeVisitor):
         self.in_try_block = False
         self.shell_param_seen = False
 
+        # Track variables containing shell execution patterns
+        # Maps var_name -> (shell_name, has_tainted_cmd, taint_source, line)
+        self.shell_pattern_vars: Dict[str, Tuple[str, bool, Optional[TaintSource], int]] = {}
+
     def get_line_content(self, lineno: int) -> str:
         """Get the source line content."""
         if 1 <= lineno <= len(self.source_lines):
@@ -276,14 +306,25 @@ class PythonTaintTracker(ast.NodeVisitor):
                     return True, TaintSource(node.func.id, node.lineno, node.col_offset, 'function')
                 if node.func.id == 'input':
                     return True, TaintSource('input()', node.lineno, node.col_offset, 'user_input')
+                # os.getenv() as direct call
+                if node.func.id == 'getenv':
+                    return True, TaintSource('os.getenv()', node.lineno, node.col_offset, 'env')
 
-            # Check for request.args.get(), request.form.get(), etc.
-            if isinstance(node.func, ast.Attribute) and node.func.attr == 'get':
-                full_name = self.get_full_attr_name(node.func.value)
+            # Check for os.environ.get(), os.getenv(), request.args.get(), etc.
+            if isinstance(node.func, ast.Attribute):
+                full_name = self.get_full_attr_name(node.func)
                 if full_name:
-                    for source in PYTHON_TAINT_SOURCES:
-                        if source in full_name:
-                            return True, TaintSource(full_name, node.lineno, node.col_offset, 'request')
+                    # os.environ.get() or os.getenv()
+                    if full_name in ('os.environ.get', 'environ.get', 'os.getenv'):
+                        return True, TaintSource(full_name + '()', node.lineno, node.col_offset, 'env')
+
+                # request.args.get(), request.form.get(), etc.
+                if node.func.attr == 'get':
+                    base_name = self.get_full_attr_name(node.func.value)
+                    if base_name:
+                        for source in PYTHON_TAINT_SOURCES:
+                            if source in base_name:
+                                return True, TaintSource(base_name, node.lineno, node.col_offset, 'request')
 
         elif isinstance(node, ast.Subscript):
             # Check request['key'] style access
@@ -361,7 +402,7 @@ class PythonTaintTracker(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign):
-        """Track variable assignments for taint propagation."""
+        """Track variable assignments for taint propagation and shell patterns."""
         # Check if right side is tainted
         tainted, source = self.is_tainted(node.value)
 
@@ -376,6 +417,14 @@ class PythonTaintTracker(ast.NodeVisitor):
                     for elt in target.elts:
                         if isinstance(elt, ast.Name):
                             self.tainted_vars[elt.id] = source
+
+        # Track shell execution patterns: args = ["/bin/sh", "-c", cmd]
+        if isinstance(node.value, (ast.List, ast.Tuple)):
+            shell_detected, shell_name, cmd_tainted, taint_source = self._check_shell_execution_pattern(node.value)
+            if shell_detected:
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        self.shell_pattern_vars[target.id] = (shell_name, cmd_tainted, taint_source, node.lineno)
 
         self.generic_visit(node)
 
@@ -418,10 +467,99 @@ class PythonTaintTracker(ast.NodeVisitor):
         if full_func_name:
             self._check_dangerous_call(node, func_name, full_func_name)
 
+        # Check ANY call for shell execution patterns in arguments
+        # This catches cases like: runner(["/bin/sh", "-c", cmd]) where runner is a variable
+        self._check_generic_shell_pattern(node, func_name)
+
         self.generic_visit(node)
+
+    def _check_generic_shell_pattern(self, node: ast.Call, func_name: Optional[str]):
+        """Check any function call for shell execution patterns in arguments."""
+        if not node.args:
+            return
+
+        first_arg = node.args[0]
+
+        # First check if the argument is a literal list/tuple with shell pattern
+        shell_pattern_detected, shell_name, cmd_tainted, cmd_source = self._check_shell_execution_pattern(first_arg)
+
+        # If not found, check if it's a variable that holds a shell pattern
+        if not shell_pattern_detected and isinstance(first_arg, ast.Name):
+            var_name = first_arg.id
+            if var_name in self.shell_pattern_vars:
+                shell_name, cmd_tainted, cmd_source, _ = self.shell_pattern_vars[var_name]
+                shell_pattern_detected = True
+
+        if shell_pattern_detected:
+            # Avoid duplicate if already caught by subprocess detection
+            if func_name and func_name in ('Popen', 'call', 'run', 'check_output', 'check_call'):
+                return
+
+            if cmd_tainted:
+                self.add_finding(
+                    node, f"Command Injection - Shell execution via dynamic call",
+                    VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", cmd_source,
+                    f"Dynamic call with [{shell_name}, '-c', <tainted>] executes user-controlled commands."
+                )
+            else:
+                self.add_finding(
+                    node, f"Command Injection - Shell execution pattern in call",
+                    VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                    description=f"Call with [{shell_name}, '-c', cmd] pattern detected - potential command execution."
+                )
 
     def _check_dangerous_call(self, node: ast.Call, func_name: str, full_func_name: str):
         """Check if a function call is a dangerous sink with tainted input."""
+
+        # ===== DYNAMIC ATTRIBUTE ACCESS ON DANGEROUS MODULES =====
+        # Detects: getattr(subprocess, "Popen"), getattr(os, "system"), etc.
+        if func_name == 'getattr' and len(node.args) >= 2:
+            module_arg = node.args[0]
+            attr_arg = node.args[1]
+
+            # Get the module name
+            module_name = None
+            if isinstance(module_arg, ast.Name):
+                module_name = module_arg.id
+            elif isinstance(module_arg, ast.Attribute):
+                module_name = self.get_full_attr_name(module_arg)
+
+            # Get the attribute name (could be string literal or variable)
+            attr_name = None
+            attr_is_tainted = False
+            if isinstance(attr_arg, ast.Constant) and isinstance(attr_arg.value, str):
+                attr_name = attr_arg.value
+            elif isinstance(attr_arg, ast.Str):  # Python < 3.8
+                attr_name = attr_arg.s
+            else:
+                # Attribute name is dynamic/variable - check if tainted
+                attr_is_tainted, taint_source = self.is_tainted(attr_arg)
+
+            # Check if this is accessing a dangerous function on a dangerous module
+            if module_name in DANGEROUS_MODULES:
+                dangerous_funcs = DANGEROUS_MODULES[module_name]
+                if attr_name and attr_name in dangerous_funcs:
+                    self.add_finding(
+                        node, f"Command/Code Injection - getattr({module_name}, '{attr_name}')",
+                        VulnCategory.COMMAND_INJECTION if module_name in ('subprocess', 'os') else VulnCategory.CODE_INJECTION,
+                        Severity.HIGH, "HIGH",
+                        description=f"Dynamic access to dangerous function {module_name}.{attr_name} via getattr() - evasion technique."
+                    )
+                elif attr_is_tainted:
+                    self.add_finding(
+                        node, f"Command/Code Injection - getattr({module_name}, <tainted>)",
+                        VulnCategory.COMMAND_INJECTION if module_name in ('subprocess', 'os') else VulnCategory.CODE_INJECTION,
+                        Severity.CRITICAL, "HIGH", taint_source,
+                        description=f"User-controlled attribute name on {module_name} module - can access any function."
+                    )
+                elif not attr_name:
+                    # Dynamic but not confirmed tainted - still suspicious
+                    self.add_finding(
+                        node, f"Potential Evasion - getattr({module_name}, <dynamic>)",
+                        VulnCategory.COMMAND_INJECTION if module_name in ('subprocess', 'os') else VulnCategory.CODE_INJECTION,
+                        Severity.MEDIUM, "MEDIUM",
+                        description=f"Dynamic attribute access on {module_name} module. Verify attribute name source."
+                    )
 
         # ===== CODE INJECTION =====
         if func_name in ('eval', 'exec', 'compile'):
@@ -462,7 +600,7 @@ class PythonTaintTracker(ast.NodeVisitor):
                         f"User-controlled data passed to os.{func_name}() can lead to command injection."
                     )
 
-        # subprocess with shell=True
+        # subprocess with shell=True or shell execution pattern
         if 'subprocess' in full_func_name or func_name in ('call', 'run', 'Popen', 'check_output', 'check_call'):
             shell_true = False
             for keyword in node.keywords:
@@ -486,6 +624,33 @@ class PythonTaintTracker(ast.NodeVisitor):
                         VulnCategory.COMMAND_INJECTION, Severity.MEDIUM, "MEDIUM",
                         description="subprocess called with shell=True. Verify input is sanitized."
                     )
+
+            # Check for shell execution pattern: ["/bin/sh", "-c", cmd] or ["cmd.exe", "/c", cmd]
+            # This is equivalent to shell=True but evades simple detection
+            if node.args and not shell_true:
+                first_arg = node.args[0]
+                shell_pattern_detected, shell_name, cmd_tainted, cmd_source = self._check_shell_execution_pattern(first_arg)
+
+                # Also check if it's a variable that holds a shell pattern
+                if not shell_pattern_detected and isinstance(first_arg, ast.Name):
+                    var_name = first_arg.id
+                    if var_name in self.shell_pattern_vars:
+                        shell_name, cmd_tainted, cmd_source, _ = self.shell_pattern_vars[var_name]
+                        shell_pattern_detected = True
+
+                if shell_pattern_detected:
+                    if cmd_tainted:
+                        self.add_finding(
+                            node, f"Command Injection - Shell execution pattern with tainted input",
+                            VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", cmd_source,
+                            f"subprocess with [{shell_name}, '-c', <tainted>] executes user-controlled commands."
+                        )
+                    else:
+                        self.add_finding(
+                            node, f"Command Injection - Shell execution pattern detected",
+                            VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                            description=f"subprocess with [{shell_name}, '-c', cmd] is equivalent to shell=True."
+                        )
 
         # ===== SQL INJECTION =====
         if func_name in ('execute', 'executemany', 'executescript'):
@@ -731,6 +896,79 @@ class PythonTaintTracker(ast.NodeVisitor):
                     return True
         return False
 
+    def _check_shell_execution_pattern(self, node: ast.AST) -> Tuple[bool, str, bool, Optional[TaintSource]]:
+        """
+        Check for shell execution pattern: ["/bin/sh", "-c", cmd] or ["cmd.exe", "/c", cmd].
+
+        Returns: (pattern_detected, shell_name, cmd_is_tainted, taint_source)
+        """
+        if not isinstance(node, (ast.List, ast.Tuple)):
+            # Only check if it's a variable that was assigned a shell pattern
+            # Do NOT return True just because the argument is tainted!
+            return False, "", False, None
+
+        elements = node.elts
+        if len(elements) < 2:
+            return False, "", False, None
+
+        # Get string values from list elements
+        def get_str_value(elt):
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                return elt.value
+            elif isinstance(elt, ast.Str):  # Python < 3.8
+                return elt.s
+            return None
+
+        first_val = get_str_value(elements[0])
+        second_val = get_str_value(elements[1]) if len(elements) > 1 else None
+
+        # Check for shell patterns
+        shell_detected = False
+        shell_name = ""
+
+        if first_val:
+            # Check if first element is a shell
+            for shell in SHELL_PATTERNS:
+                if first_val == shell or first_val.endswith('/' + shell):
+                    shell_detected = True
+                    shell_name = shell
+                    break
+
+        if not shell_detected:
+            return False, "", False, None
+
+        # Check if second element is a shell flag (-c, /c, etc.)
+        has_shell_flag = False
+        if second_val:
+            for flag in SHELL_FLAGS:
+                if second_val == flag:
+                    has_shell_flag = True
+                    break
+
+        if not has_shell_flag:
+            return False, "", False, None
+
+        # Shell execution pattern detected! Check if the command (3rd+ element) is tainted
+        cmd_tainted = False
+        taint_source = None
+
+        for i in range(2, len(elements)):
+            tainted, source = self.is_tainted(elements[i])
+            if tainted:
+                cmd_tainted = True
+                taint_source = source
+                break
+
+        return True, shell_name, cmd_tainted, taint_source
+
+    def _get_string_value(self, node: ast.AST) -> Optional[str]:
+        """Extract string value from an AST node if it's a string literal."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        elif isinstance(node, ast.Str):  # Python < 3.8
+            return node.s
+        return None
+
     def visit_Compare(self, node: ast.Compare):
         """Check for weak password comparisons."""
         # Detect patterns like: password == user_input
@@ -776,13 +1014,29 @@ class PythonTaintTracker(ast.NodeVisitor):
                 ))
 
             if re.search(r'base64\.b64decode\s*\(', line) and not re.search(r'#.*base64', line):
-                # Check context for suspicious decoded content
-                self.findings.append(Finding(
-                    file_path=self.file_path, line_number=i, col_offset=0,
-                    line_content=line, vulnerability_name="Potential Evasion - base64 decode",
-                    category=VulnCategory.CODE_INJECTION, severity=Severity.MEDIUM,
-                    confidence="MEDIUM", description="base64 decoding may hide malicious strings."
-                ))
+                # Check context for dangerous sinks - only flag if flows to sink
+                context = '\n'.join(self.source_lines[max(0, i-3):min(len(self.source_lines), i+10)])
+                has_dangerous_sink = re.search(
+                    r'subprocess|Popen|system|popen|exec|eval|shell|cmd|command|'
+                    r'run_command|execute|Process|spawn|/bin/sh|cmd\.exe',
+                    context, re.IGNORECASE
+                )
+
+                if has_dangerous_sink:
+                    self.findings.append(Finding(
+                        file_path=self.file_path, line_number=i, col_offset=0,
+                        line_content=line, vulnerability_name="Command/Code Evasion - base64 decode flows to sink",
+                        category=VulnCategory.COMMAND_INJECTION, severity=Severity.HIGH,
+                        confidence="HIGH", description="base64 decoded data flows to dangerous sink - likely evasion."
+                    ))
+                else:
+                    # Still flag but as lower severity/confidence without dangerous context
+                    self.findings.append(Finding(
+                        file_path=self.file_path, line_number=i, col_offset=0,
+                        line_content=line, vulnerability_name="Potential Evasion - base64 decode",
+                        category=VulnCategory.CODE_INJECTION, severity=Severity.LOW,
+                        confidence="LOW", description="base64 decoding detected. Verify usage context."
+                    ))
 
             if re.search(r'bytes\.fromhex\s*\(|\.fromhex\s*\(', line):
                 self.findings.append(Finding(
@@ -1172,6 +1426,21 @@ class JavaScriptAnalyzer:
             # proc.execSync or similar
             (r'\w+\s*\.\s*execSync\s*\(', "Command Injection - execSync call"),
             (r'\w+\s*\.\s*exec\s*\([^)]*\+', "Command Injection - exec with concatenation"),
+            # Dynamic property access on child_process: cp['exec'], cp[method]
+            (r'child_process\s*\[\s*[`"\']?\w+[`"\']?\s*\]', "Command Injection - Dynamic child_process access"),
+            (r'\bcp\s*\[\s*[`"\']?\w+[`"\']?\s*\]', "Command Injection - Dynamic cp module access"),
+        ]
+
+        # Shell execution patterns (sh -c, cmd /c)
+        shell_patterns = [
+            # Unix shells with -c flag
+            (r'\[\s*[`"\'](?:/bin/sh|/bin/bash|sh|bash)[`"\']\s*,\s*[`"\']-c[`"\']', "Command Injection - Shell execution pattern [sh, -c]"),
+            (r'spawn\s*\(\s*[`"\'](?:/bin/sh|/bin/bash|sh|bash)[`"\']\s*,\s*\[\s*[`"\']-c[`"\']', "Command Injection - spawn shell -c"),
+            # Windows cmd /c
+            (r'\[\s*[`"\']cmd(?:\.exe)?[`"\']\s*,\s*[`"\']/[ck][`"\']', "Command Injection - Shell execution pattern [cmd, /c]"),
+            (r'spawn\s*\(\s*[`"\']cmd(?:\.exe)?[`"\']\s*,\s*\[\s*[`"\']/[ck][`"\']', "Command Injection - spawn cmd /c"),
+            # PowerShell
+            (r'\[\s*[`"\']powershell(?:\.exe)?[`"\']\s*,\s*[`"\']-(?:Command|c)[`"\']', "Command Injection - Shell execution pattern [powershell]"),
         ]
 
         for i, line in enumerate(self.source_lines, 1):
@@ -1200,6 +1469,19 @@ class JavaScriptAnalyzer:
                     self._add_finding(i, vuln_name,
                                       VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
                                       "Command execution via evasion technique detected.")
+
+            # Check shell execution patterns (sh -c, cmd /c)
+            for pattern, vuln_name in shell_patterns:
+                if re.search(pattern, line):
+                    has_taint = any(var in line for var in self.tainted_vars)
+                    if has_taint:
+                        self._add_finding(i, f"{vuln_name} with user input",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH",
+                                          "Shell execution pattern with user-controlled command.")
+                    else:
+                        self._add_finding(i, vuln_name,
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                          "Shell execution pattern detected - equivalent to shell:true.")
 
             # Special: Check for spawn with shell option in context
             if re.search(r'\bspawn\s*\(', line):
@@ -2503,6 +2785,46 @@ class JavaAnalyzer:
                                       VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
                                       "User-controlled data passed to ProcessBuilder.")
 
+                # Check for shell execution pattern: ProcessBuilder("/bin/sh", "-c", cmd)
+                # or ProcessBuilder("cmd.exe", "/c", cmd)
+                shell_pattern = re.search(
+                    r'new\s+ProcessBuilder\s*\(\s*["\'](?:/bin/sh|/bin/bash|sh|bash|cmd(?:\.exe)?)["\']',
+                    line
+                )
+                if shell_pattern:
+                    context = '\n'.join(self.source_lines[i-1:min(len(self.source_lines), i+3)])
+                    if re.search(r'["\'](?:-c|/c|/k)["\']', context):
+                        if is_tainted:
+                            self._add_finding(i, "Command Injection - ProcessBuilder shell execution with tainted input",
+                                              VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                              "ProcessBuilder with shell and -c flag executing user-controlled command.")
+                        else:
+                            self._add_finding(i, "Command Injection - ProcessBuilder shell execution pattern",
+                                              VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                              description="ProcessBuilder with shell and -c flag - equivalent to Runtime.exec(cmd, true).")
+
+            # Reflection-based command execution evasion
+            # Method.invoke() on Runtime class
+            if re.search(r'\.invoke\s*\(', line):
+                context = '\n'.join(self.source_lines[max(0, i-10):i+1])
+                # Check if invoking methods on Runtime or ProcessBuilder
+                if re.search(r'Runtime|ProcessBuilder|exec|getRuntime', context, re.IGNORECASE):
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted:
+                        self._add_finding(i, "Command Injection - Reflection invoke with tainted input",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                          "Reflection used to invoke command execution with user-controlled data.")
+                    else:
+                        self._add_finding(i, "Command Injection - Reflection invoke on Runtime/ProcessBuilder",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                          description="Reflection invoke on Runtime/ProcessBuilder - evasion technique.")
+
+            # getMethod/getDeclaredMethod on exec
+            if re.search(r'\.(?:getMethod|getDeclaredMethod)\s*\(\s*["\']exec["\']', line):
+                self._add_finding(i, "Command Injection - Reflection getMethod('exec')",
+                                  VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                  description="Reflection used to get 'exec' method - evasion technique.")
+
     def _check_deserialization(self):
         """Check for insecure deserialization patterns."""
         for i, line in enumerate(self.source_lines, 1):
@@ -2807,7 +3129,6 @@ class PHPAnalyzer:
         self._check_command_injection()
         self._check_code_injection()
         self._check_file_inclusion()
-        self._check_xss()
         self._check_deserialization()
         self._check_ssrf()
         self._check_path_traversal()
@@ -2873,6 +3194,55 @@ class PHPAnalyzer:
                                       VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
                                       "User input in backtick command execution.")
 
+            # Variable function call: $func() where $func could be "system", "exec", etc.
+            # Pattern: $var() or $var(args)
+            var_func_match = re.search(r'\$(\w+)\s*\(', line)
+            if var_func_match:
+                var_name = var_func_match.group(1)
+                # Check if this variable might contain a dangerous function name
+                context = '\n'.join(self.source_lines[max(0, i-10):i])
+                if re.search(rf'\${re.escape(var_name)}\s*=\s*["\'](?:system|exec|shell_exec|passthru|popen|eval)', context):
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted:
+                        self._add_finding(i, "Command Injection - Variable function with tainted args",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                          f"Variable function ${var_name}() with user-controlled arguments.")
+                    else:
+                        self._add_finding(i, "Command Injection - Variable function (dangerous)",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                          description=f"Variable function ${var_name}() may call dangerous functions.")
+                elif var_name in self.tainted_vars:
+                    # Function name is tainted - can call arbitrary functions
+                    self._add_finding(i, "Code Injection - Tainted variable function name",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", var_name,
+                                      f"User-controlled function name ${var_name}() can execute arbitrary code.")
+
+            # call_user_func / call_user_func_array with dynamic function
+            if re.search(r'call_user_func(?:_array)?\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "Code Injection - call_user_func with tainted data",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "User-controlled function name in call_user_func().")
+                elif re.search(r'call_user_func(?:_array)?\s*\(\s*\$', line):
+                    self._add_finding(i, "Code Injection - call_user_func with variable",
+                                      VulnCategory.CODE_INJECTION, Severity.HIGH, "MEDIUM",
+                                      description="Variable function name in call_user_func(). Verify source.")
+
+            # Shell execution patterns: sh -c, cmd /c in proc_open/popen
+            if re.search(r'(?:popen|proc_open)\s*\(', line):
+                context = '\n'.join(self.source_lines[i-1:min(len(self.source_lines), i+3)])
+                if re.search(r'["\'](?:/bin/sh|/bin/bash|sh|bash|cmd(?:\.exe)?)["\'].*["\'](?:-c|/c)["\']', context):
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted:
+                        self._add_finding(i, "Command Injection - Shell execution pattern with tainted input",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                          "Shell with -c flag executing user-controlled command.")
+                    else:
+                        self._add_finding(i, "Command Injection - Shell execution pattern",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                          description="Shell with -c flag pattern detected.")
+
     def _check_code_injection(self):
         for i, line in enumerate(self.source_lines, 1):
             if line.strip().startswith('//'):
@@ -2925,21 +3295,6 @@ class PHPAnalyzer:
                     self._add_finding(i, "File Inclusion - Dynamic include",
                                       VulnCategory.PATH_TRAVERSAL, Severity.HIGH, "MEDIUM",
                                       description="Variable in file inclusion. Verify source.")
-
-    def _check_xss(self):
-        output_funcs = r'\b(echo|print|printf|print_r|var_dump)\s*[\(\s]'
-
-        for i, line in enumerate(self.source_lines, 1):
-            if line.strip().startswith('//'):
-                continue
-            if re.search(output_funcs, line):
-                is_tainted, taint_var = self._is_tainted(line)
-                # Check if escaped
-                has_escape = re.search(r'htmlspecialchars|htmlentities|strip_tags|esc_html', line)
-                if is_tainted and not has_escape:
-                    self._add_finding(i, "XSS - Unescaped output with tainted data",
-                                      VulnCategory.XSS, Severity.HIGH, "MEDIUM", taint_var,
-                                      "User input output without escaping.")
 
     def _check_deserialization(self):
         for i, line in enumerate(self.source_lines, 1):
@@ -3055,7 +3410,6 @@ class CSharpAnalyzer:
         self._check_path_traversal()
         self._check_xxe()
         self._check_ldap_injection()
-        self._check_xss()
         return self.findings
 
     def _add_finding(self, line_num: int, vuln_name: str, category: VulnCategory,
@@ -3112,6 +3466,36 @@ class CSharpAnalyzer:
                     self._add_finding(i, "Command Injection - Process.Start with tainted data",
                                       VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
                                       "User input passed to Process.Start().")
+
+                # Check for shell execution pattern: cmd.exe /c or powershell -c
+                context = '\n'.join(self.source_lines[max(0, i-2):min(len(self.source_lines), i+3)])
+                shell_pattern = re.search(
+                    r'["\'](?:cmd(?:\.exe)?|powershell(?:\.exe)?)["\'].*["\'](?:/c|/k|-c|-Command)["\']',
+                    context, re.IGNORECASE
+                )
+                if shell_pattern:
+                    if is_tainted:
+                        self._add_finding(i, "Command Injection - Shell execution pattern with tainted input",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                          "Process.Start with cmd/powershell -c and user-controlled command.")
+                    else:
+                        self._add_finding(i, "Command Injection - Shell execution pattern",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                          description="Process.Start with cmd/powershell -c pattern.")
+
+            # Reflection-based execution: Type.InvokeMember, MethodInfo.Invoke
+            if re.search(r'\.InvokeMember\s*\(|MethodInfo.*\.Invoke\s*\(', line):
+                context = '\n'.join(self.source_lines[max(0, i-10):i+1])
+                if re.search(r'Process|Start|Shell|Command|Execute', context, re.IGNORECASE):
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted:
+                        self._add_finding(i, "Command Injection - Reflection Invoke with tainted input",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                          "Reflection used to invoke command execution with user input.")
+                    else:
+                        self._add_finding(i, "Command Injection - Reflection Invoke (evasion)",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                          description="Reflection invoke near command execution - evasion technique.")
 
     def _check_deserialization(self):
         deser_patterns = [
@@ -3183,19 +3567,6 @@ class CSharpAnalyzer:
                     self._add_finding(i, "LDAP Injection - Filter with tainted data",
                                       VulnCategory.LDAP_INJECTION, Severity.HIGH, "HIGH", taint_var,
                                       "User input in LDAP filter.")
-
-    def _check_xss(self):
-        for i, line in enumerate(self.source_lines, 1):
-            if line.strip().startswith('//'):
-                continue
-
-            if re.search(r'Response\.Write\s*\(|@Html\.Raw\s*\(', line):
-                is_tainted, taint_var = self._is_tainted(line)
-                has_encode = re.search(r'HtmlEncode|AntiXss|Encoder\.', line)
-                if is_tainted and not has_encode:
-                    self._add_finding(i, "XSS - Unencoded output with tainted data",
-                                      VulnCategory.XSS, Severity.HIGH, "MEDIUM", taint_var,
-                                      "User input output without encoding.")
 
 
 class GoAnalyzer:
@@ -3325,12 +3696,42 @@ class GoAnalyzer:
                                       VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
                                       "User input passed to exec.Command().")
 
+                # Check for shell execution pattern: exec.Command("sh", "-c", cmd)
+                context = '\n'.join(self.source_lines[i-1:min(len(self.source_lines), i+3)])
+                shell_pattern = re.search(
+                    r'exec\.Command\s*\(\s*["`](?:/bin/sh|/bin/bash|sh|bash|cmd)["`]\s*,\s*["`](?:-c|/c)["`]',
+                    context
+                )
+                if shell_pattern:
+                    if is_tainted:
+                        self._add_finding(i, "Command Injection - Shell execution pattern with tainted input",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                          "exec.Command with shell -c and user-controlled command.")
+                    else:
+                        self._add_finding(i, "Command Injection - Shell execution pattern",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                          description="exec.Command with sh -c pattern - review carefully.")
+
             if re.search(r'os\.StartProcess\s*\(', line):
                 is_tainted, taint_var = self._is_tainted(line)
                 if is_tainted:
                     self._add_finding(i, "Command Injection - os.StartProcess with tainted data",
                                       VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
                                       "User input passed to os.StartProcess().")
+
+            # reflect.Value.Call for dynamic method invocation
+            if re.search(r'reflect\..*\.Call\s*\(', line):
+                context = '\n'.join(self.source_lines[max(0, i-10):i+1])
+                if re.search(r'exec|Command|Process|system|shell', context, re.IGNORECASE):
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted:
+                        self._add_finding(i, "Command Injection - Reflect Call with tainted input",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                          "Reflection call to command execution with user input.")
+                    else:
+                        self._add_finding(i, "Command Injection - Reflect Call (evasion)",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "MEDIUM",
+                                          description="Reflection call near command execution - evasion technique.")
 
     def _check_path_traversal(self):
         file_patterns = [
@@ -3494,6 +3895,38 @@ class RubyAnalyzer:
                                               VulnCategory.SQL_INJECTION, Severity.HIGH, "MEDIUM",
                                               description="String interpolation in SQL. Use parameterized queries.")
 
+            # Arel.sql() - commonly misused for ORDER BY injection
+            if re.search(r'Arel\.sql\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                has_interp = '#{' in line
+
+                # Check if only direction is validated (common mistake)
+                # Pattern: sort_direction validated but sort_key/sort_column is not
+                has_partial_validation = False
+                context_start = max(0, i - 5)
+                context_lines = self.source_lines[context_start:i]
+                context = '\n'.join(context_lines)
+
+                # Check for direction validation without column validation
+                if re.search(r'(?:asc|desc|ASC|DESC)["\'\]]', context):
+                    if re.search(r'(?:sort_key|sort_column|column|field|order_by)', line):
+                        # Direction validated, but column might not be
+                        if not re.search(r'(?:ALLOWED|VALID|SAFE|PERMITTED|include\?)', context):
+                            has_partial_validation = True
+
+                if has_interp:
+                    self._add_finding(i, "SQL Injection - Arel.sql() with string interpolation",
+                                      VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "Arel.sql() with interpolation allows SQL injection. Whitelist column names.")
+                elif is_tainted:
+                    self._add_finding(i, "SQL Injection - Arel.sql() with tainted input",
+                                      VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "User input passed to Arel.sql(). Whitelist allowed values.")
+                elif has_partial_validation:
+                    self._add_finding(i, "SQL Injection - Arel.sql() partial validation (direction only)",
+                                      VulnCategory.SQL_INJECTION, Severity.HIGH, "HIGH",
+                                      description="Direction validated but column/key may not be. Whitelist column names.")
+
     def _check_command_injection(self):
         cmd_patterns = [
             r'\bsystem\s*\(', r'\bexec\s*\(', r'\b`[^`]+`',
@@ -3514,6 +3947,27 @@ class RubyAnalyzer:
                         self._add_finding(i, "Command Injection - Shell execution with tainted data",
                                           VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
                                           "User input in shell command.")
+
+            # Shell execution pattern with sh -c
+            if re.search(r'(?:system|exec|IO\.popen|Open3\.)', line):
+                context = '\n'.join(self.source_lines[i-1:min(len(self.source_lines), i+3)])
+                if re.search(r'["\'](?:/bin/sh|/bin/bash|sh|bash)["\'].*["\'](?:-c)["\']', context):
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted:
+                        self._add_finding(i, "Command Injection - Shell execution pattern with tainted input",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                          "Shell with -c flag executing user-controlled command.")
+                    else:
+                        self._add_finding(i, "Command Injection - Shell execution pattern",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                          description="Shell with -c pattern detected.")
+
+            # Dynamic method call via send with dangerous methods
+            if re.search(r'\.send\s*\([^)]*(?:system|exec|eval)', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                self._add_finding(i, "Code Injection - send() with dangerous method",
+                                  VulnCategory.CODE_INJECTION, Severity.HIGH, "HIGH", taint_var,
+                                  "Dynamic method invocation with dangerous method name.")
 
     def _check_code_injection(self):
         for i, line in enumerate(self.source_lines, 1):
@@ -3747,9 +4201,28 @@ class ASTScanner:
         return self._filter_findings(findings)
 
     def _filter_findings(self, findings: List[Finding]) -> List[Finding]:
-        """Filter findings by category if specified."""
+        """Filter findings by category if specified, and deduplicate."""
+        # First, deduplicate: keep highest severity finding per (file, line, category)
+        severity_order = {Severity.CRITICAL: 4, Severity.HIGH: 3, Severity.MEDIUM: 2, Severity.LOW: 1, Severity.INFO: 0}
+        conf_order = {'HIGH': 3, 'MEDIUM': 2, 'LOW': 1}
+
+        best_findings: Dict[Tuple[str, int, VulnCategory], Finding] = {}
+        for f in findings:
+            key = (f.file_path, f.line_number, f.category)
+            if key not in best_findings:
+                best_findings[key] = f
+            else:
+                existing = best_findings[key]
+                # Keep the one with higher severity, or higher confidence if same severity
+                existing_score = (severity_order.get(existing.severity, 0), conf_order.get(existing.confidence, 0))
+                new_score = (severity_order.get(f.severity, 0), conf_order.get(f.confidence, 0))
+                if new_score > existing_score:
+                    best_findings[key] = f
+
+        deduped = list(best_findings.values())
+
         if not self.categories:
-            return findings
+            return deduped
 
         category_map = {
             'sql': VulnCategory.SQL_INJECTION,
@@ -3765,7 +4238,6 @@ class ASTScanner:
             'xpath': VulnCategory.XPATH_INJECTION,
             'xxe': VulnCategory.XXE,
             'path': VulnCategory.PATH_TRAVERSAL,
-            'xss': VulnCategory.XSS,
             'lfi': VulnCategory.LFI_RFI,
             'rfi': VulnCategory.LFI_RFI,
             'ldap': VulnCategory.LDAP_INJECTION,
@@ -3777,9 +4249,9 @@ class ASTScanner:
             if cat_lower in category_map:
                 allowed.add(category_map[cat_lower])
             elif cat_lower == 'all':
-                return findings
+                return deduped
 
-        return [f for f in findings if f.category in allowed]
+        return [f for f in deduped if f.category in allowed]
 
     def scan_directory(self, directory: Path) -> List[Finding]:
         """Recursively scan a directory."""
