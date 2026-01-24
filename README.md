@@ -131,6 +131,11 @@ The AST scanner (`ast-scanner.py`) provides advanced vulnerability detection thr
 <th>Detection Techniques</th>
 </tr>
 <tr>
+<td><strong>XSS (Cross-Site Scripting)</strong></td>
+<td><code>CRITICAL</code></td>
+<td>DOM-based (innerHTML, document.write), Reflected (res.send), jQuery, React, Angular, Vue</td>
+</tr>
+<tr>
 <td><strong>SQL Injection</strong></td>
 <td><code>CRITICAL</code></td>
 <td>Taint tracking, String.Format patterns, StringBuilder analysis</td>
@@ -297,6 +302,53 @@ python3 ast-scanner.py project/ -v
 ---
 
 ## Advanced Detection Features
+
+### Cross-Site Scripting (XSS) Detection
+
+Comprehensive XSS detection for DOM-based, Reflected, and framework-specific patterns:
+
+**DOM-Based XSS (JavaScript)**:
+```javascript
+// DETECTED: innerHTML with location.hash
+document.getElementById('content').innerHTML = location.hash;
+
+// DETECTED: document.write with referrer
+document.write('<div>' + document.referrer + '</div>');
+
+// DETECTED: jQuery .html() with user data
+$('#output').html(userInput);
+```
+
+**Reflected XSS (Express.js)**:
+```javascript
+// DETECTED: Template literal in response
+res.send(`<h1>Search: ${req.query.q}</h1>`);
+
+// DETECTED: Concatenation in response
+res.send('<h1>Hello, ' + req.query.name + '</h1>');
+```
+
+**Framework-Specific**:
+```javascript
+// DETECTED: React dangerouslySetInnerHTML
+<div dangerouslySetInnerHTML={{ __html: userContent }} />
+
+// DETECTED: Angular innerHTML binding
+<div [innerHTML]="userContent"></div>
+
+// DETECTED: Vue v-html directive
+<div v-html="userContent"></div>
+```
+
+**PHP XSS**:
+```php
+// DETECTED: Direct superglobal output
+echo $_GET['name'];
+
+// DETECTED: Tainted variable output
+$input = $_POST['data'];
+echo $input;
+```
 
 ### C# Destructor/Finalizer Command Injection
 
@@ -598,6 +650,8 @@ vuln-scanner/
 ├── README.md           # Documentation
 ├── LICENSE             # MIT License
 └── test-files/         # Sample vulnerable configurations for testing
+    ├── xss-test.js                   # JavaScript - DOM-based & Reflected XSS
+    ├── xss-test.php                  # PHP - Superglobal & tainted XSS
     ├── web.config                    # ASP.NET - ViewState, MachineKey
     ├── django-settings.py            # Django - DEBUG, SECRET_KEY, Pickle
     ├── flask-config.py               # Flask - Debug, hardcoded keys
@@ -615,6 +669,8 @@ The `test-files/` directory contains **intentionally vulnerable** configuration 
 
 | File | Framework | Key Vulnerabilities |
 |------|-----------|---------------------|
+| `xss-test.js` | JavaScript | DOM-based XSS, Reflected XSS, jQuery, React, Angular, Vue |
+| `xss-test.php` | PHP | Direct superglobal output, tainted variable XSS |
 | `web.config` | ASP.NET | ViewState MAC disabled, MachineKey validation=None |
 | `django-settings.py` | Django | DEBUG=True, PickleSerializer, hardcoded SECRET_KEY |
 | `flask-config.py` | Flask | Debug mode, hardcoded credentials, insecure cookies |

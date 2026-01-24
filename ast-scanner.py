@@ -1734,6 +1734,7 @@ class JavaScriptAnalyzer:
         self._check_xxe()
         self._check_xpath_injection()
         self._check_auth_bypass()
+        self._check_xss()
         return self.findings
 
     def _add_finding(self, line_num: int, vuln_name: str, category: VulnCategory,
@@ -2961,6 +2962,165 @@ class JavaScriptAnalyzer:
                                       VulnCategory.AUTH_BYPASS, Severity.MEDIUM, "MEDIUM",
                                       "Potential authentication weakness.")
 
+    def _check_xss(self):
+        """Check for Cross-Site Scripting (XSS) vulnerabilities - DOM-based and Reflected."""
+        # DOM-based XSS sinks - CRITICAL when combined with tainted sources
+        dom_sinks = [
+            (r'\.innerHTML\s*=', "XSS - innerHTML assignment"),
+            (r'\.outerHTML\s*=', "XSS - outerHTML assignment"),
+            (r'\.insertAdjacentHTML\s*\(', "XSS - insertAdjacentHTML"),
+            (r'document\.write\s*\(', "XSS - document.write"),
+            (r'document\.writeln\s*\(', "XSS - document.writeln"),
+            (r'\.createContextualFragment\s*\(', "XSS - createContextualFragment"),
+        ]
+
+        # DOM sources that can be user-controlled
+        dom_sources = [
+            r'location\.hash',
+            r'location\.search',
+            r'location\.href',
+            r'location\.pathname',
+            r'document\.URL',
+            r'document\.documentURI',
+            r'document\.referrer',
+            r'document\.cookie',
+            r'window\.name',
+            r'\.value\b',  # Input element values
+            r'\.getAttribute\s*\(',
+            r'\.dataset\.',
+            r'localStorage\.',
+            r'sessionStorage\.',
+            r'\.getItem\s*\(',
+            r'URLSearchParams',
+            r'\.get\s*\(\s*["\']',
+        ]
+
+        # jQuery XSS sinks
+        jquery_sinks = [
+            (r'\$\s*\([^)]*\)\s*\.html\s*\(', "XSS - jQuery .html() with dynamic content"),
+            (r'\.html\s*\(\s*[^)]*[\+\$`]', "XSS - jQuery .html() with concatenation"),
+            (r'\$\s*\(\s*["\']<', "XSS - jQuery selector with HTML string"),
+            (r'\$\s*\(\s*[^"\'<][^)]*\)', "XSS - jQuery selector with variable"),
+            (r'\.append\s*\(\s*["\']<', "XSS - jQuery .append() with HTML"),
+            (r'\.prepend\s*\(\s*["\']<', "XSS - jQuery .prepend() with HTML"),
+            (r'\.after\s*\(\s*["\']<', "XSS - jQuery .after() with HTML"),
+            (r'\.before\s*\(\s*["\']<', "XSS - jQuery .before() with HTML"),
+            (r'\.replaceWith\s*\(\s*["\']<', "XSS - jQuery .replaceWith() with HTML"),
+        ]
+
+        # React dangerouslySetInnerHTML
+        react_patterns = [
+            (r'dangerouslySetInnerHTML\s*=\s*\{\s*\{', "XSS - React dangerouslySetInnerHTML"),
+            (r'__html\s*:', "XSS - React __html property"),
+        ]
+
+        # Angular patterns
+        angular_patterns = [
+            (r'\[innerHTML\]\s*=', "XSS - Angular innerHTML binding"),
+            (r'bypassSecurityTrust', "XSS - Angular security bypass"),
+            (r'DomSanitizer.*bypass', "XSS - Angular DomSanitizer bypass"),
+        ]
+
+        # Vue.js patterns
+        vue_patterns = [
+            (r'v-html\s*=', "XSS - Vue.js v-html directive"),
+        ]
+
+        # Server-side reflected XSS (Express.js, etc.)
+        server_xss = [
+            (r'res\.send\s*\([^)]*\+', "XSS - Express res.send with concatenation"),
+            (r'res\.send\s*\(\s*`[^`]*\$\{', "XSS - Express res.send with template literal"),
+            (r'res\.write\s*\([^)]*\+', "XSS - Express res.write with concatenation"),
+            (r'response\.send\s*\([^)]*\+', "XSS - Response send with concatenation"),
+        ]
+
+        # URL-based XSS patterns (javascript: protocol)
+        url_xss = [
+            (r'href\s*=.*javascript:', "XSS - javascript: protocol in href"),
+            (r'src\s*=.*javascript:', "XSS - javascript: protocol in src"),
+            (r'location\s*=.*javascript:', "XSS - javascript: protocol in location"),
+            (r'window\.open\s*\([^)]*javascript:', "XSS - javascript: in window.open"),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            # Check DOM sinks
+            for pattern, vuln_name in dom_sinks:
+                if re.search(pattern, line):
+                    # Check if line also contains a DOM source (DOM-based XSS)
+                    has_dom_source = any(re.search(src, line) for src in dom_sources)
+                    has_taint = any(var in line for var in self.tainted_vars)
+                    has_concat = '+' in line or '${' in line or '`' in line
+
+                    if has_dom_source or has_taint:
+                        self._add_finding(i, f"DOM-Based {vuln_name}",
+                                          VulnCategory.XSS, Severity.CRITICAL, "HIGH",
+                                          "User-controlled data flows to DOM sink without sanitization.")
+                    elif has_concat:
+                        self._add_finding(i, vuln_name,
+                                          VulnCategory.XSS, Severity.HIGH, "MEDIUM",
+                                          "Dynamic content in DOM sink - verify input is sanitized.")
+
+            # Check jQuery sinks
+            for pattern, vuln_name in jquery_sinks:
+                if re.search(pattern, line):
+                    has_taint = any(var in line for var in self.tainted_vars)
+                    if has_taint:
+                        self._add_finding(i, vuln_name,
+                                          VulnCategory.XSS, Severity.CRITICAL, "HIGH",
+                                          "Tainted data in jQuery DOM manipulation.")
+                    elif re.search(r'\+|`|\$\{', line):
+                        self._add_finding(i, vuln_name,
+                                          VulnCategory.XSS, Severity.HIGH, "MEDIUM",
+                                          "Dynamic content in jQuery method - verify sanitization.")
+
+            # Check React patterns
+            for pattern, vuln_name in react_patterns:
+                if re.search(pattern, line):
+                    self._add_finding(i, vuln_name,
+                                      VulnCategory.XSS, Severity.HIGH, "HIGH",
+                                      "React dangerouslySetInnerHTML bypasses XSS protection.")
+
+            # Check Angular patterns
+            for pattern, vuln_name in angular_patterns:
+                if re.search(pattern, line):
+                    self._add_finding(i, vuln_name,
+                                      VulnCategory.XSS, Severity.HIGH, "HIGH",
+                                      "Angular security bypass detected.")
+
+            # Check Vue patterns
+            for pattern, vuln_name in vue_patterns:
+                if re.search(pattern, line):
+                    self._add_finding(i, vuln_name,
+                                      VulnCategory.XSS, Severity.HIGH, "MEDIUM",
+                                      "Vue v-html renders raw HTML - verify input is trusted.")
+
+            # Check server-side reflected XSS
+            for pattern, vuln_name in server_xss:
+                if re.search(pattern, line):
+                    has_taint = any(var in line for var in self.tainted_vars)
+                    # Check context for request data
+                    context = '\n'.join(self.source_lines[max(0, i-10):i+1])
+                    has_req = re.search(r'req\.|request\.', context)
+                    if has_taint or has_req:
+                        self._add_finding(i, f"Reflected {vuln_name}",
+                                          VulnCategory.XSS, Severity.CRITICAL, "HIGH",
+                                          "User input reflected in HTTP response without encoding.")
+                    else:
+                        self._add_finding(i, vuln_name,
+                                          VulnCategory.XSS, Severity.MEDIUM, "MEDIUM",
+                                          "Dynamic content in response - verify output encoding.")
+
+            # Check URL-based XSS
+            for pattern, vuln_name in url_xss:
+                if re.search(pattern, line, re.IGNORECASE):
+                    self._add_finding(i, vuln_name,
+                                      VulnCategory.XSS, Severity.CRITICAL, "HIGH",
+                                      "javascript: protocol allows arbitrary code execution.")
+
 
 class JavaAnalyzer:
     """
@@ -3229,6 +3389,7 @@ class JavaAnalyzer:
         self._check_script_engine()
         self._check_reflection_injection()
         self._check_jni_native()
+        self._check_xss()
         return self.findings
 
     def _add_finding(self, line_num: int, vuln_name: str, category: VulnCategory,
@@ -3733,6 +3894,68 @@ class JavaAnalyzer:
                                                      f"Verify arguments are not user-controlled. "
                                                      f"Native library loaded at line {loadlibrary_line}.")
 
+    def _check_xss(self):
+        """Check for XSS vulnerabilities in Java/JSP code."""
+        # JSP expression patterns - reflected XSS
+        jsp_patterns = [
+            (r'<%=\s*request\.getParameter\s*\(', "XSS - JSP expression with request parameter"),
+            (r'<%=\s*request\.getAttribute\s*\(', "XSS - JSP expression with request attribute"),
+            (r'<%=.*\+.*request\.', "XSS - JSP expression concatenation with request"),
+            (r'<c:out\s+value=.*\$\{param\.', "XSS - JSTL c:out with param (check escapeXml)"),
+            (r'\$\{param\.\w+\}', "XSS - EL expression with param (unescaped)"),
+            (r'\$\{requestScope\.', "XSS - EL expression with requestScope"),
+        ]
+
+        # Servlet response patterns - reflected XSS
+        servlet_patterns = [
+            (r'getWriter\s*\(\s*\)\s*\.\s*(?:print|println|write)\s*\(', "XSS - Servlet PrintWriter output"),
+            (r'response\.getWriter\s*\(\s*\)', "XSS - Servlet response writer"),
+            (r'getOutputStream\s*\(\s*\)\s*\.\s*write\s*\(', "XSS - Servlet OutputStream"),
+        ]
+
+        # Spring MVC patterns
+        spring_patterns = [
+            (r'@ResponseBody.*return.*\+', "XSS - Spring @ResponseBody with concatenation"),
+            (r'ModelAndView.*addObject\s*\(', "XSS - Spring ModelAndView (verify template escaping)"),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+                continue
+
+            # Check JSP patterns
+            for pattern, vuln_name in jsp_patterns:
+                if re.search(pattern, line):
+                    self._add_finding(i, vuln_name,
+                                      VulnCategory.XSS, Severity.HIGH, "HIGH",
+                                      description="User input rendered in JSP without encoding.")
+
+            # Check Servlet patterns
+            for pattern, vuln_name in servlet_patterns:
+                if re.search(pattern, line):
+                    is_tainted, taint_var = self._is_tainted(line)
+                    context = '\n'.join(self.source_lines[max(0, i-5):i+1])
+                    has_request = re.search(r'request\.|getParameter|getHeader', context)
+
+                    if is_tainted or has_request:
+                        self._add_finding(i, f"Reflected {vuln_name}",
+                                          VulnCategory.XSS, Severity.CRITICAL, "HIGH", taint_var,
+                                          "Request data written to response without encoding.")
+                    elif re.search(r'\+|String\.format|concat', line):
+                        self._add_finding(i, vuln_name,
+                                          VulnCategory.XSS, Severity.HIGH, "MEDIUM",
+                                          "Dynamic content in response - verify output encoding.")
+
+            # Check Spring patterns
+            for pattern, vuln_name in spring_patterns:
+                if re.search(pattern, line):
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted:
+                        self._add_finding(i, vuln_name,
+                                          VulnCategory.XSS, Severity.HIGH, "HIGH", taint_var,
+                                          "User input in Spring response.")
+
 
 class PHPAnalyzer:
     """
@@ -3811,6 +4034,7 @@ class PHPAnalyzer:
         self._check_deserialization()
         self._check_ssrf()
         self._check_path_traversal()
+        self._check_xss()
         return self.findings
 
     def _add_finding(self, line_num: int, vuln_name: str, category: VulnCategory,
@@ -4088,6 +4312,64 @@ class PHPAnalyzer:
                                       VulnCategory.PATH_TRAVERSAL, Severity.HIGH, "HIGH", taint_var,
                                       "User input in file path allows traversal.")
 
+    def _check_xss(self):
+        """Check for XSS vulnerabilities in PHP code."""
+        # Direct output of user input - Reflected XSS
+        output_patterns = [
+            (r'\becho\s+\$_(?:GET|POST|REQUEST|COOKIE)', "XSS - Direct echo of superglobal"),
+            (r'\bprint\s+\$_(?:GET|POST|REQUEST|COOKIE)', "XSS - Direct print of superglobal"),
+            (r'<\?=\s*\$_(?:GET|POST|REQUEST|COOKIE)', "XSS - Short echo tag with superglobal"),
+            (r'\becho\s+[^;]*\.\s*\$_(?:GET|POST|REQUEST)', "XSS - Echo with superglobal concatenation"),
+            (r'\bprint\s+[^;]*\.\s*\$_(?:GET|POST|REQUEST)', "XSS - Print with superglobal concatenation"),
+        ]
+
+        # Tainted variable output
+        tainted_output = [
+            (r'\becho\s+\$\w+', "XSS - Echo with variable"),
+            (r'\bprint\s+\$\w+', "XSS - Print with variable"),
+            (r'<\?=\s*\$\w+', "XSS - Short echo with variable"),
+            (r'printf\s*\([^,]+,\s*\$', "XSS - printf with variable"),
+        ]
+
+        # HTML context patterns
+        html_patterns = [
+            (r'["\']>\s*<\?.*\$_(?:GET|POST|REQUEST)', "XSS - PHP in HTML attribute"),
+            (r'value\s*=\s*["\']?\s*<\?.*\$', "XSS - Variable in form value"),
+            (r'href\s*=\s*["\']?\s*<\?.*\$', "XSS - Variable in href"),
+            (r'src\s*=\s*["\']?\s*<\?.*\$', "XSS - Variable in src"),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//') or line.strip().startswith('#'):
+                continue
+
+            # Check direct superglobal output (critical)
+            for pattern, vuln_name in output_patterns:
+                if re.search(pattern, line):
+                    # Check for encoding functions
+                    if not re.search(r'htmlspecialchars|htmlentities|strip_tags|esc_html|esc_attr', line):
+                        self._add_finding(i, vuln_name,
+                                          VulnCategory.XSS, Severity.CRITICAL, "HIGH",
+                                          description="Direct output of user input without encoding.")
+
+            # Check tainted variable output
+            for pattern, vuln_name in tainted_output:
+                match = re.search(pattern, line)
+                if match:
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted:
+                        if not re.search(r'htmlspecialchars|htmlentities|strip_tags|esc_html|esc_attr', line):
+                            self._add_finding(i, vuln_name,
+                                              VulnCategory.XSS, Severity.HIGH, "HIGH", taint_var,
+                                              "Tainted variable output without encoding.")
+
+            # Check HTML context
+            for pattern, vuln_name in html_patterns:
+                if re.search(pattern, line, re.IGNORECASE):
+                    self._add_finding(i, vuln_name,
+                                      VulnCategory.XSS, Severity.HIGH, "HIGH",
+                                      description="Dynamic content in HTML attribute context.")
+
 
 class CSharpAnalyzer:
     """
@@ -4241,6 +4523,7 @@ class CSharpAnalyzer:
         self._check_ssrf()
         self._check_ssti()
         self._check_viewstate_vulnerabilities()
+        self._check_xss()
         return self.findings
 
     def _add_finding(self, line_num: int, vuln_name: str, category: VulnCategory,
@@ -5052,6 +5335,87 @@ class ASPNetConfigAnalyzer:
                     "Directory browsing exposes file structure. Attackers can enumerate files and find sensitive data."
                 )
 
+    def _check_xss(self):
+        """Check for XSS vulnerabilities in C#/ASP.NET code."""
+        # ASP.NET Web Forms patterns
+        webforms_patterns = [
+            (r'<%=\s*Request\[', "XSS - ASP.NET expression with Request"),
+            (r'<%=\s*Request\.QueryString', "XSS - ASP.NET expression with QueryString"),
+            (r'<%=\s*Request\.Form', "XSS - ASP.NET expression with Form"),
+            (r'Response\.Write\s*\([^)]*Request', "XSS - Response.Write with Request"),
+            (r'\.Text\s*=\s*Request', "XSS - Control.Text assigned from Request"),
+            (r'\.InnerHtml\s*=', "XSS - InnerHtml assignment"),
+            (r'\.InnerText\s*=.*Request', "XSS - InnerText with Request data"),
+        ]
+
+        # ASP.NET MVC/Razor patterns
+        mvc_patterns = [
+            (r'@Html\.Raw\s*\(', "XSS - Html.Raw bypasses encoding"),
+            (r'HtmlString\s*\(', "XSS - HtmlString bypasses encoding"),
+            (r'MvcHtmlString\s*\(', "XSS - MvcHtmlString bypasses encoding"),
+            (r'@\s*ViewBag\.\w+(?!.*@Html\.Encode)', "XSS - Razor ViewBag (verify encoding)"),
+            (r'@\s*ViewData\[', "XSS - Razor ViewData (verify encoding)"),
+            (r'@\s*Model\.\w+(?!.*@Html\.Encode)', "XSS - Razor Model (check encoding)"),
+        ]
+
+        # Response output patterns
+        response_patterns = [
+            (r'Response\.Write\s*\([^)]*\+', "XSS - Response.Write with concatenation"),
+            (r'Response\.Write\s*\(\s*\$"', "XSS - Response.Write with interpolation"),
+            (r'Response\.Output\.Write', "XSS - Response.Output.Write"),
+            (r'HttpContext\.Current\.Response\.Write', "XSS - HttpContext Response.Write"),
+        ]
+
+        # Content result patterns (Web API)
+        api_patterns = [
+            (r'Content\s*\([^)]*\+', "XSS - Content result with concatenation"),
+            (r'return\s+Content\s*\(.*Request', "XSS - Content with Request data"),
+            (r'ContentResult.*Content\s*=', "XSS - ContentResult assignment"),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            # Check Web Forms patterns
+            for pattern, vuln_name in webforms_patterns:
+                if re.search(pattern, line):
+                    # Check for encoding
+                    if not re.search(r'HtmlEncode|Server\.HtmlEncode|AntiXss|Encoder\.', line):
+                        self._add_finding(i, vuln_name,
+                                          VulnCategory.XSS, Severity.HIGH, "HIGH",
+                                          description="User input in response without encoding.")
+
+            # Check MVC/Razor patterns
+            for pattern, vuln_name in mvc_patterns:
+                if re.search(pattern, line):
+                    self._add_finding(i, vuln_name,
+                                      VulnCategory.XSS, Severity.HIGH, "HIGH",
+                                      description="Razor output may bypass automatic encoding.")
+
+            # Check Response patterns
+            for pattern, vuln_name in response_patterns:
+                if re.search(pattern, line):
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted:
+                        self._add_finding(i, f"Reflected {vuln_name}",
+                                          VulnCategory.XSS, Severity.CRITICAL, "HIGH", taint_var,
+                                          "Tainted data written to response.")
+                    elif not re.search(r'HtmlEncode|AntiXss|Encoder\.', line):
+                        self._add_finding(i, vuln_name,
+                                          VulnCategory.XSS, Severity.HIGH, "MEDIUM",
+                                          description="Dynamic content in response - verify encoding.")
+
+            # Check API patterns
+            for pattern, vuln_name in api_patterns:
+                if re.search(pattern, line):
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted:
+                        self._add_finding(i, vuln_name,
+                                          VulnCategory.XSS, Severity.HIGH, "HIGH", taint_var,
+                                          "User input in API response.")
+
 
 class GoAnalyzer:
     """
@@ -5122,6 +5486,7 @@ class GoAnalyzer:
         self._check_path_traversal()
         self._check_ssrf()
         self._check_ssti()
+        self._check_xss()
         return self.findings
 
     def _add_finding(self, line_num: int, vuln_name: str, category: VulnCategory,
@@ -5138,6 +5503,51 @@ class GoAnalyzer:
             severity=severity, confidence=confidence,
             taint_chain=taint_chain, description=description,
         ))
+
+    def _check_xss(self):
+        """Check for XSS vulnerabilities in Go code."""
+        # HTTP response patterns
+        response_patterns = [
+            (r'\.Write\s*\(\s*\[\]byte\s*\(', "XSS - ResponseWriter.Write"),
+            (r'fmt\.Fprint\w*\s*\(\s*w\s*,', "XSS - fmt.Fprint to ResponseWriter"),
+            (r'io\.WriteString\s*\(\s*w\s*,', "XSS - io.WriteString to ResponseWriter"),
+            (r'w\.Write\s*\(', "XSS - Direct Write to ResponseWriter"),
+        ]
+
+        # Template patterns (html/template is safe, text/template is not)
+        template_patterns = [
+            (r'text/template', "XSS - text/template (use html/template)"),
+            (r'template\.HTML\s*\(', "XSS - template.HTML bypasses escaping"),
+            (r'template\.JS\s*\(', "XSS - template.JS (verify input)"),
+            (r'template\.URL\s*\(', "XSS - template.URL (verify input)"),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//'):
+                continue
+
+            # Check response patterns
+            for pattern, vuln_name in response_patterns:
+                if re.search(pattern, line):
+                    is_tainted, taint_var = self._is_tainted(line)
+                    context = '\n'.join(self.source_lines[max(0, i-5):i+1])
+                    has_request = re.search(r'r\.URL|r\.Form|r\.PostForm|r\.Body|FormValue|QueryString', context)
+
+                    if is_tainted or has_request:
+                        self._add_finding(i, f"Reflected {vuln_name}",
+                                          VulnCategory.XSS, Severity.HIGH, "HIGH", taint_var,
+                                          "User input written to HTTP response.")
+                    elif re.search(r'\+|fmt\.Sprintf', line):
+                        self._add_finding(i, vuln_name,
+                                          VulnCategory.XSS, Severity.MEDIUM, "MEDIUM",
+                                          description="Dynamic content in response - verify encoding.")
+
+            # Check template patterns
+            for pattern, vuln_name in template_patterns:
+                if re.search(pattern, line):
+                    self._add_finding(i, vuln_name,
+                                      VulnCategory.XSS, Severity.HIGH, "HIGH",
+                                      description="Template usage may bypass HTML escaping.")
 
     def _check_sql_injection(self):
         sql_patterns = [
@@ -5334,6 +5744,7 @@ class RubyAnalyzer:
         self._check_path_traversal()
         self._check_ssrf()
         self._check_ssti()
+        self._check_xss()
         return self.findings
 
     def _add_finding(self, line_num: int, vuln_name: str, category: VulnCategory,
@@ -5352,6 +5763,59 @@ class RubyAnalyzer:
             severity=severity, confidence=confidence,
             taint_chain=taint_chain, description=description,
         ))
+
+    def _check_xss(self):
+        """Check for XSS vulnerabilities in Ruby/Rails code."""
+        # ERB patterns - unescaped output
+        erb_patterns = [
+            (r'<%=\s*raw\s', "XSS - ERB raw helper"),
+            (r'<%==', "XSS - ERB double equals (unescaped)"),
+            (r'\.html_safe', "XSS - html_safe bypasses escaping"),
+            (r'<%=.*params\[', "XSS - ERB with params"),
+        ]
+
+        # Rails helper patterns
+        rails_patterns = [
+            (r'render\s+inline:', "XSS - render inline (potential SSTI/XSS)"),
+            (r'render\s+html:', "XSS - render html"),
+            (r'content_tag.*params', "XSS - content_tag with params"),
+            (r'link_to.*params', "XSS - link_to with params"),
+            (r'sanitize\s*\(.*params', "XSS - sanitize with params (verify whitelist)"),
+        ]
+
+        # Direct response patterns
+        response_patterns = [
+            (r'render\s+text:\s*params', "XSS - render text with params"),
+            (r'render\s+plain:\s*params', "XSS - render plain with params"),
+            (r'send_data.*params', "XSS - send_data with params"),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('#'):
+                continue
+
+            # Check ERB patterns
+            for pattern, vuln_name in erb_patterns:
+                if re.search(pattern, line):
+                    self._add_finding(i, vuln_name,
+                                      VulnCategory.XSS, Severity.HIGH, "HIGH",
+                                      description="Unescaped output in ERB template.")
+
+            # Check Rails patterns
+            for pattern, vuln_name in rails_patterns:
+                if re.search(pattern, line):
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted or 'params' in line:
+                        self._add_finding(i, vuln_name,
+                                          VulnCategory.XSS, Severity.HIGH, "HIGH", taint_var,
+                                          "User input in Rails helper.")
+
+            # Check response patterns
+            for pattern, vuln_name in response_patterns:
+                if re.search(pattern, line):
+                    self._add_finding(i, vuln_name,
+                                      VulnCategory.XSS, Severity.CRITICAL, "HIGH",
+                                      description="Direct params in response.")
 
     def _check_sql_injection(self):
         sql_patterns = [
