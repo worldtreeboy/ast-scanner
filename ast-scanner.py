@@ -3947,9 +3947,12 @@ class CSharpAnalyzer:
         self.file_path = file_path
         self.findings: List[Finding] = []
         self.tainted_vars: Dict[str, int] = {}
+        self.tainted_fields: Dict[str, int] = {}  # Track tainted class fields
+        self.constructor_params: Dict[str, int] = {}  # Track constructor parameters
 
         self._identify_taint_sources()
         self._track_variable_assignments()
+        self._track_field_assignments()
 
     def _identify_taint_sources(self):
         """Identify ASP.NET request objects and method parameters as taint sources."""
@@ -3988,10 +3991,66 @@ class CSharpAnalyzer:
                         self.tainted_vars[var_name] = i
                         break
 
+    def _track_field_assignments(self):
+        """Track constructor parameter to field assignments for delayed execution patterns."""
+        in_constructor = False
+        constructor_line = 0
+        current_class = None
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//'):
+                continue
+
+            # Track class declarations
+            class_match = re.search(r'(?:public|private|internal)?\s*class\s+(\w+)', line)
+            if class_match:
+                current_class = class_match.group(1)
+
+            # Detect constructor: ClassName(params) or public ClassName(params)
+            if current_class:
+                ctor_pattern = rf'(?:public|private|protected|internal)?\s*{re.escape(current_class)}\s*\(([^)]*)\)'
+                ctor_match = re.search(ctor_pattern, line)
+                if ctor_match and '~' not in line:  # Not a destructor
+                    in_constructor = True
+                    constructor_line = i
+                    # Extract constructor parameters as taint sources
+                    params = ctor_match.group(1)
+                    for param_match in re.finditer(r'(?:\w+(?:<[^>]+>)?)\s+(\w+)', params):
+                        param_name = param_match.group(1)
+                        self.constructor_params[param_name] = i
+                        self.tainted_vars[param_name] = i
+
+            # Track field assignments inside constructor: this._field = param or _field = param
+            if in_constructor:
+                # Pattern: this._field = param; or _field = param; or this.Field = param;
+                field_assign = re.search(r'(?:this\.)?(_?\w+)\s*=\s*(\w+)\s*;', line)
+                if field_assign:
+                    field_name = field_assign.group(1)
+                    assigned_value = field_assign.group(2)
+                    # Check if assigned value is a constructor parameter (tainted)
+                    if assigned_value in self.constructor_params:
+                        self.tainted_fields[field_name] = i
+                        # Also track without underscore prefix and with this. prefix
+                        if field_name.startswith('_'):
+                            self.tainted_fields[field_name[1:]] = i
+                        self.tainted_fields[f'this.{field_name}'] = i
+
+            # End of constructor (simplified: next method or closing brace at same indent)
+            if in_constructor and i > constructor_line:
+                # Detect end of constructor by finding next method or destructor
+                if re.search(r'(?:public|private|protected|internal)\s+(?:void|string|int|bool|async)', line):
+                    in_constructor = False
+                elif re.search(r'~\w+\s*\(\s*\)', line):
+                    in_constructor = False
+
     def _is_tainted(self, line: str) -> Tuple[bool, Optional[str]]:
         for var in self.tainted_vars:
             if re.search(rf'\b{re.escape(var)}\b', line):
                 return True, var
+        # Check tainted fields (from constructor parameter flow)
+        for field in self.tainted_fields:
+            if re.search(rf'\b{re.escape(field)}\b', line):
+                return True, field
         if re.search(r'Request\s*[\[.]', line):
             return True, 'Request'
         return False, None
@@ -4147,6 +4206,66 @@ class CSharpAnalyzer:
                         self._add_finding(i, "Command Injection - Reflection Invoke (evasion)",
                                           VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
                                           description="Reflection invoke near command execution - evasion technique.")
+
+        # Second pass: Detect destructor/finalizer command injection (delayed execution pattern)
+        self._check_destructor_injection(system_tools)
+
+    def _check_destructor_injection(self, system_tools: str):
+        """Detect command injection in destructors/finalizers - delayed execution attack pattern."""
+        in_destructor = False
+        destructor_line = 0
+        destructor_class = None
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//'):
+                continue
+
+            # Detect destructor: ~ClassName()
+            dtor_match = re.search(r'~(\w+)\s*\(\s*\)', line)
+            if dtor_match:
+                in_destructor = True
+                destructor_line = i
+                destructor_class = dtor_match.group(1)
+                continue
+
+            if in_destructor:
+                # Check for Process.Start or other dangerous calls in destructor
+                if re.search(r'Process\.Start\s*\(', line):
+                    is_tainted, taint_var = self._is_tainted(line)
+                    has_concat = '+' in line or '$"' in line or 'String.Format' in line
+
+                    if is_tainted:
+                        self._add_finding(i, "Command Injection - Destructor/Finalizer with tainted field",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                          f"Tainted field used in Process.Start inside ~{destructor_class}() finalizer. "
+                                          "Command executes automatically during garbage collection.")
+                    elif has_concat:
+                        # Check if any field is used in the concatenation
+                        field_used = None
+                        for field in self.tainted_fields:
+                            if re.search(rf'\b{re.escape(field)}\b', line):
+                                field_used = field
+                                break
+                        if field_used:
+                            self._add_finding(i, "Command Injection - Destructor with tainted field concatenation",
+                                              VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", field_used,
+                                              f"Field '{field_used}' (tainted via constructor) concatenated in "
+                                              f"~{destructor_class}() finalizer. Delayed command execution attack.")
+
+                # Also check for other dangerous patterns in destructors
+                if re.search(r'\.Start\s*\(|Runtime.*exec|shell|cmd\.exe|powershell', line, re.IGNORECASE):
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted and 'Process.Start' not in line:  # Avoid duplicate with above
+                        self._add_finding(i, "Command Injection - Dangerous call in destructor",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH", taint_var,
+                                          f"Tainted data used in dangerous call inside ~{destructor_class}() finalizer.")
+
+                # End of destructor (next method or closing brace)
+                if re.search(r'(?:public|private|protected|internal)\s+', line) and '~' not in line:
+                    in_destructor = False
+                elif line.strip() == '}' and i > destructor_line + 1:
+                    # Simple heuristic: closing brace likely ends the destructor
+                    in_destructor = False
 
     def _analyze_psi_block(self, start_line: int, block_text: str, system_tools: str):
         """Analyze a ProcessStartInfo object initializer block for command injection."""
