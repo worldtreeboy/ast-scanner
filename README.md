@@ -36,7 +36,9 @@ A cross-platform static analysis toolkit for detecting security vulnerabilities 
 - Traces user input through code paths
 - Context-aware detection
 - Confidence scoring (HIGH/MEDIUM/LOW)
-- Lower false positive rate
+- Constant folding & obfuscation detection
+- Virtual sink & factory pattern tracking
+- JNI native method detection (Java)
 - Python AST + multi-language regex
 
 </td>
@@ -325,7 +327,38 @@ Summary: 3 findings in 45 files scanned
 
 ## Evasion Detection
 
-The AST scanner detects common obfuscation techniques:
+The AST scanner detects common obfuscation techniques through advanced analysis:
+
+### Constant Folding & Obfuscation Resolution
+
+```python
+# Detected: Hex-encoded function names are resolved at analysis time
+func_name = bytes.fromhex('73797374656d').decode()  # Resolves to 'system'
+sink = getattr(os, func_name)
+sink(user_input)
+
+# Detected: Base64-encoded payloads tracked through decode chains
+encoded = base64.b64decode(user_data).decode('utf-8')
+os.system(encoded)
+```
+
+### Virtual Sink & Factory Pattern Detection
+
+```python
+# Detected: Factory functions that return dangerous sinks
+def bridge_factory(module_name, func_hex):
+    mod = __import__(module_name)
+    func_name = bytes.fromhex(func_hex).decode()
+    return getattr(mod, func_name)  # Returns os.system
+
+# Detected: Virtual sink called with tainted data
+sink_ptr = bridge_factory('os', '73797374656d')
+sink_ptr(user_input)  # Flagged as command injection
+
+# Detected: Closure-based execution patterns
+def handler(data):
+    sink_ptr(data)  # Taint flows through closures
+```
 
 ### Dynamic Execution Patterns
 
@@ -368,6 +401,25 @@ const mod = require('child_' + 'process');
 // Detected: Indirect eval
 const indirect = (0, eval);
 indirect(user_input);
+```
+
+### Java JNI Native Method Detection
+
+```java
+// Detected: Taint escaping to native code via JNI
+public class NativeWrapper {
+    // Native method declaration - sink escapes to C/C++
+    public native void executeInternal(String cmd);
+
+    static {
+        System.loadLibrary("native_lib");
+    }
+
+    public void processRequest(String userInput) {
+        // Flagged: Tainted data flows to native method
+        executeInternal(userInput);
+    }
+}
 ```
 
 ---

@@ -260,6 +260,35 @@ class PythonTaintTracker(ast.NodeVisitor):
         # Maps var_name -> (shell_name, has_tainted_cmd, taint_source, line)
         self.shell_pattern_vars: Dict[str, Tuple[str, bool, Optional[TaintSource], int]] = {}
 
+        # CONSTANT FOLDING: Resolve obfuscated strings at analysis time
+        # Maps var_name -> resolved string value (e.g., 'self.trigger' -> 'system')
+        self.resolved_constants: Dict[str, str] = {}
+
+        # VIRTUAL SINKS: Track variables that resolve to dangerous functions
+        # Maps var_name -> (module, func_name, line) e.g., 'executor' -> ('os', 'system', 16)
+        self.virtual_sinks: Dict[str, Tuple[str, str, int]] = {}
+
+        # Dangerous functions that can be loaded via getattr
+        self.dangerous_funcs = {
+            'os': {'system', 'popen', 'popen2', 'popen3', 'popen4', 'spawn', 'spawnl',
+                   'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp',
+                   'spawnvpe', 'exec', 'execl', 'execle', 'execlp', 'execlpe',
+                   'execv', 'execve', 'execvp', 'execvpe', 'startfile'},
+            'subprocess': {'call', 'run', 'Popen', 'check_output', 'check_call',
+                          'getoutput', 'getstatusoutput'},
+            'builtins': {'eval', 'exec', 'compile', '__import__'},
+            'commands': {'getoutput', 'getstatusoutput'},
+        }
+
+        # Track dynamically imported modules: var_name -> True (indicates dynamic import)
+        self.dynamic_imports: Dict[str, int] = {}  # var -> line number
+
+        # Track variables that hold decoded strings (potential function names)
+        self.decoded_vars: Dict[str, int] = {}  # var -> line number
+
+        # Track functions that return virtual sinks
+        self.virtual_sink_factories: Dict[str, Tuple[str, int]] = {}  # func_name -> (pattern, line)
+
     def get_line_content(self, lineno: int) -> str:
         """Get the source line content."""
         if 1 <= lineno <= len(self.source_lines):
@@ -277,6 +306,128 @@ class PythonTaintTracker(ast.NodeVisitor):
             parts.append(current.id)
             parts.reverse()
             return '.'.join(parts)
+        return None
+
+    def try_resolve_constant(self, node: ast.AST) -> Optional[str]:
+        """
+        CONSTANT FOLDING: Try to resolve an AST node to a constant string value.
+        Handles obfuscation patterns like:
+        - bytes.fromhex('...').decode()
+        - base64.b64decode('...').decode()
+        - codecs.decode('...', 'rot13')
+        - chr(n) + chr(n) + ...
+        - ''.join([chr(x) for x in [...]])
+        """
+        # Direct string constant
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Str):  # Python < 3.8
+            return node.s
+
+        # Variable reference - check resolved_constants
+        if isinstance(node, ast.Name):
+            if node.id in self.resolved_constants:
+                return self.resolved_constants[node.id]
+
+        # Attribute reference (self.xxx) - check resolved_constants
+        if isinstance(node, ast.Attribute):
+            full_name = self.get_full_attr_name(node)
+            if full_name and full_name in self.resolved_constants:
+                return self.resolved_constants[full_name]
+
+        # Method call patterns
+        if isinstance(node, ast.Call):
+            # Pattern: bytes.fromhex('...').decode()
+            if isinstance(node.func, ast.Attribute) and node.func.attr == 'decode':
+                inner = node.func.value
+                if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute):
+                    if inner.func.attr == 'fromhex':
+                        # bytes.fromhex('hex_string')
+                        if inner.args and isinstance(inner.args[0], (ast.Constant, ast.Str)):
+                            hex_str = inner.args[0].value if isinstance(inner.args[0], ast.Constant) else inner.args[0].s
+                            try:
+                                return bytes.fromhex(hex_str).decode()
+                            except:
+                                pass
+
+            # Pattern: base64.b64decode('...').decode() or just base64.b64decode('...')
+            if isinstance(node.func, ast.Attribute):
+                func_name = self.get_full_attr_name(node.func)
+                if func_name and 'b64decode' in func_name:
+                    # Check for chained .decode()
+                    if node.func.attr == 'decode':
+                        inner = node.func.value
+                        if isinstance(inner, ast.Call):
+                            inner_func = self.get_full_attr_name(inner.func) if isinstance(inner.func, ast.Attribute) else None
+                            if inner_func and 'b64decode' in inner_func and inner.args:
+                                b64_arg = inner.args[0]
+                                if isinstance(b64_arg, (ast.Constant, ast.Str)):
+                                    b64_str = b64_arg.value if isinstance(b64_arg, ast.Constant) else b64_arg.s
+                                    try:
+                                        import base64
+                                        return base64.b64decode(b64_str).decode()
+                                    except:
+                                        pass
+                    # Direct b64decode
+                    elif node.func.attr == 'b64decode' and node.args:
+                        b64_arg = node.args[0]
+                        if isinstance(b64_arg, (ast.Constant, ast.Str)):
+                            b64_str = b64_arg.value if isinstance(b64_arg, ast.Constant) else b64_arg.s
+                            try:
+                                import base64
+                                return base64.b64decode(b64_str).decode()
+                            except:
+                                pass
+
+            # Pattern: codecs.decode('...', 'rot13')
+            if isinstance(node.func, ast.Attribute) and node.func.attr == 'decode':
+                func_name = self.get_full_attr_name(node.func)
+                if func_name == 'codecs.decode' and len(node.args) >= 2:
+                    str_arg = node.args[0]
+                    enc_arg = node.args[1]
+                    if isinstance(str_arg, (ast.Constant, ast.Str)) and isinstance(enc_arg, (ast.Constant, ast.Str)):
+                        s = str_arg.value if isinstance(str_arg, ast.Constant) else str_arg.s
+                        enc = enc_arg.value if isinstance(enc_arg, ast.Constant) else enc_arg.s
+                        if 'rot' in enc.lower():
+                            try:
+                                import codecs
+                                return codecs.decode(s, enc)
+                            except:
+                                pass
+
+            # Pattern: chr(n) - single character
+            if isinstance(node.func, ast.Name) and node.func.id == 'chr':
+                if node.args and isinstance(node.args[0], (ast.Constant, ast.Num)):
+                    num = node.args[0].value if isinstance(node.args[0], ast.Constant) else node.args[0].n
+                    if isinstance(num, int):
+                        try:
+                            return chr(num)
+                        except:
+                            pass
+
+        # Binary operation (string concatenation)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = self.try_resolve_constant(node.left)
+            right = self.try_resolve_constant(node.right)
+            if left is not None and right is not None:
+                return left + right
+
+        # List/tuple of characters joined
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute) and node.func.attr == 'join':
+                # ''.join([...])
+                if isinstance(node.func.value, (ast.Constant, ast.Str)):
+                    joiner = node.func.value.value if isinstance(node.func.value, ast.Constant) else node.func.value.s
+                    if node.args and isinstance(node.args[0], (ast.List, ast.Tuple)):
+                        chars = []
+                        for elt in node.args[0].elts:
+                            resolved = self.try_resolve_constant(elt)
+                            if resolved is not None:
+                                chars.append(resolved)
+                            else:
+                                return None
+                        return joiner.join(chars)
+
         return None
 
     def is_tainted(self, node: ast.AST) -> Tuple[bool, Optional[TaintSource]]:
@@ -325,6 +476,24 @@ class PythonTaintTracker(ast.NodeVisitor):
                         for source in PYTHON_TAINT_SOURCES:
                             if source in base_name:
                                 return True, TaintSource(base_name, node.lineno, node.col_offset, 'request')
+
+            # TAINT PROPAGATION: If any argument is tainted, result is tainted
+            # This handles cases like: base64.b64decode(tainted_var), json.loads(data), etc.
+            for arg in node.args:
+                tainted, source = self.is_tainted(arg)
+                if tainted:
+                    return True, source
+            # Also check keyword arguments
+            for kw in node.keywords:
+                tainted, source = self.is_tainted(kw.value)
+                if tainted:
+                    return True, source
+            # Check method calls on tainted objects: tainted_obj.method()
+            # e.g., base64.b64decode(tainted).decode() - the .decode() call is on tainted data
+            if isinstance(node.func, ast.Attribute):
+                tainted, source = self.is_tainted(node.func.value)
+                if tainted:
+                    return True, source
 
         elif isinstance(node, ast.Subscript):
             # Check request['key'] style access
@@ -402,7 +571,21 @@ class PythonTaintTracker(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign):
-        """Track variable assignments for taint propagation and shell patterns."""
+        """Track variable assignments for taint propagation, shell patterns, and constant folding."""
+        # CONSTANT FOLDING: Try to resolve the value to a constant string
+        resolved_value = self.try_resolve_constant(node.value)
+        if resolved_value is not None:
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.resolved_constants[target.id] = resolved_value
+                elif isinstance(target, ast.Attribute):
+                    full_name = self.get_full_attr_name(target)
+                    if full_name:
+                        self.resolved_constants[full_name] = resolved_value
+
+        # VIRTUAL SINK DETECTION: Check for getattr(module, func_name) patterns
+        self._check_virtual_sink_creation(node)
+
         # Check if right side is tainted
         tainted, source = self.is_tainted(node.value)
 
@@ -428,15 +611,142 @@ class PythonTaintTracker(ast.NodeVisitor):
 
         self.generic_visit(node)
 
+    def _check_virtual_sink_creation(self, node: ast.Assign):
+        """
+        Detect when a variable is assigned a dangerous function via getattr.
+        e.g., executor = getattr(os, 'system') -> executor becomes a virtual sink
+        Also tracks __import__() and decode() patterns for interprocedural analysis.
+        """
+        if not isinstance(node.value, ast.Call):
+            return
+
+        call = node.value
+
+        # Check if calling a virtual sink factory: sink_ptr = bridge_factory(...)
+        if isinstance(call.func, ast.Name) and call.func.id in self.virtual_sink_factories:
+            factory_name = call.func.id
+            pattern, line = self.virtual_sink_factories[factory_name]
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.virtual_sinks[target.id] = ("<factory>", factory_name, node.lineno)
+                    self.add_finding(
+                        node,
+                        f"Virtual Sink Created - Call to sink factory '{factory_name}'",
+                        VulnCategory.CODE_INJECTION, Severity.HIGH, "HIGH",
+                        description=f"Variable '{target.id}' receives result from virtual sink factory "
+                                   f"'{factory_name}()'. This variable is now a potential RCE vector."
+                    )
+
+        # Track __import__() assignments: mod = __import__(module_name)
+        if isinstance(call.func, ast.Name) and call.func.id == '__import__':
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.dynamic_imports[target.id] = node.lineno
+
+        # Track decode() assignments from hex/base64: func_name = bytes.fromhex(...).decode()
+        if isinstance(call.func, ast.Attribute) and call.func.attr == 'decode':
+            inner = call.func.value
+            if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute):
+                if inner.func.attr in ('fromhex', 'b64decode'):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            self.decoded_vars[target.id] = node.lineno
+
+        # Check for getattr(module, func_name)
+        if isinstance(call.func, ast.Name) and call.func.id == 'getattr':
+            if len(call.args) >= 2:
+                module_arg = call.args[0]
+                func_arg = call.args[1]
+
+                # Get module name - check if it's a dynamic import
+                module_name = None
+                is_dynamic_module = False
+                if isinstance(module_arg, ast.Name):
+                    if module_arg.id in self.dynamic_imports:
+                        is_dynamic_module = True
+                        module_name = f"<dynamic:{module_arg.id}>"
+                    else:
+                        module_name = module_arg.id
+                elif isinstance(module_arg, ast.Attribute):
+                    module_name = self.get_full_attr_name(module_arg)
+
+                # Try to resolve the function name
+                func_name = self.try_resolve_constant(func_arg)
+
+                # Check if func_arg is a decoded variable (potential sink name)
+                func_is_decoded = False
+                if isinstance(func_arg, ast.Name) and func_arg.id in self.decoded_vars:
+                    func_is_decoded = True
+
+                # Case 1: Both module and func are known - precise detection
+                if module_name and func_name:
+                    is_dangerous = False
+                    for mod, funcs in self.dangerous_funcs.items():
+                        if mod in module_name or module_name == mod:
+                            if func_name in funcs:
+                                is_dangerous = True
+                                break
+
+                    if is_dangerous:
+                        for target in node.targets:
+                            if isinstance(target, ast.Name):
+                                self.virtual_sinks[target.id] = (module_name, func_name, node.lineno)
+                                self.add_finding(
+                                    node,
+                                    f"Code Evasion - Dynamic function resolution: {module_name}.{func_name}",
+                                    VulnCategory.CODE_INJECTION, Severity.HIGH, "HIGH",
+                                    description=f"getattr() resolves to dangerous function {module_name}.{func_name}(). "
+                                               f"Variable '{target.id}' is now a virtual sink."
+                                )
+
+                # Case 2: Dynamic module + decoded function name - high suspicion
+                elif is_dynamic_module and func_is_decoded:
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            # Mark as virtual sink with unknown function
+                            self.virtual_sinks[target.id] = ("<dynamic>", "<decoded>", node.lineno)
+                            self.add_finding(
+                                node,
+                                "Critical Evasion - Dynamic module + decoded function name",
+                                VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH",
+                                description=f"getattr() on dynamically imported module with decoded function name. "
+                                           f"Variable '{target.id}' is a potential RCE sink. "
+                                           f"Pattern: __import__() + bytes.fromhex/b64decode + getattr()"
+                            )
+
+                # Case 3: Known dangerous module + decoded function name
+                elif module_name and func_is_decoded:
+                    for mod in self.dangerous_funcs.keys():
+                        if mod in module_name or module_name == mod:
+                            for target in node.targets:
+                                if isinstance(target, ast.Name):
+                                    self.virtual_sinks[target.id] = (module_name, "<decoded>", node.lineno)
+                                    self.add_finding(
+                                        node,
+                                        f"Code Evasion - getattr({module_name}, <decoded>) potential RCE",
+                                        VulnCategory.CODE_INJECTION, Severity.HIGH, "HIGH",
+                                        description=f"getattr() on {module_name} with decoded function name. "
+                                                   f"Variable '{target.id}' may be a dangerous function."
+                                    )
+                            break
+
     def visit_FunctionDef(self, node: ast.FunctionDef):
         """Track function definitions."""
         old_function = self.current_function
         self.current_function = node.name
 
-        # Track parameters
+        # Track parameters and mark potentially tainted ones
         params = []
+        taint_param_keywords = {'input', 'data', 'user', 'request', 'query', 'cmd', 'command',
+                                'param', 'arg', 'payload', 'body', 'content', 'raw', 'untrusted'}
         for arg in node.args.args:
             params.append(arg.arg)
+            # Mark parameters with suspicious names as tainted (potential user input)
+            arg_lower = arg.arg.lower()
+            if any(kw in arg_lower for kw in taint_param_keywords):
+                self.tainted_vars[arg.arg] = TaintSource(
+                    arg.arg, node.lineno, node.col_offset, 'parameter'
+                )
         self.function_params[node.name] = params
 
         self.generic_visit(node)
@@ -445,6 +755,45 @@ class PythonTaintTracker(ast.NodeVisitor):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
         """Track async function definitions."""
         self.visit_FunctionDef(node)  # Same handling
+
+    def visit_Return(self, node: ast.Return):
+        """Track return statements for virtual sink factories."""
+        if node.value and isinstance(node.value, ast.Call):
+            call = node.value
+            # Check for: return getattr(dynamic_module, decoded_func)
+            if isinstance(call.func, ast.Name) and call.func.id == 'getattr':
+                if len(call.args) >= 2:
+                    module_arg = call.args[0]
+                    func_arg = call.args[1]
+
+                    # Check if module is dynamically imported
+                    is_dynamic_module = False
+                    module_name = None
+                    if isinstance(module_arg, ast.Name):
+                        if module_arg.id in self.dynamic_imports:
+                            is_dynamic_module = True
+                        module_name = module_arg.id
+
+                    # Check if func is from decode
+                    func_is_decoded = False
+                    if isinstance(func_arg, ast.Name) and func_arg.id in self.decoded_vars:
+                        func_is_decoded = True
+
+                    # Detect the dangerous pattern
+                    if is_dynamic_module and func_is_decoded:
+                        # Mark the current function as a virtual sink factory
+                        if self.current_function:
+                            self.virtual_sink_factories[self.current_function] = ("dynamic_getattr", node.lineno)
+                        self.add_finding(
+                            node,
+                            "Critical Evasion - Function returns dynamic getattr()",
+                            VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH",
+                            description=f"Function '{self.current_function}' returns getattr() on dynamically "
+                                       f"imported module with decoded function name. "
+                                       f"Any call to this function returns a potential RCE sink."
+                        )
+
+        self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call):
         """Analyze function calls for dangerous sinks."""
@@ -463,6 +812,29 @@ class PythonTaintTracker(ast.NodeVisitor):
             full_func_name = self.get_full_attr_name(node.func)
             if full_func_name:
                 func_name = full_func_name.split('.')[-1]
+
+        # VIRTUAL SINK DETECTION: Check if calling a virtual sink with tainted data
+        if isinstance(node.func, ast.Name) and node.func.id in self.virtual_sinks:
+            module_name, resolved_func, def_line = self.virtual_sinks[node.func.id]
+            if node.args:
+                tainted, source = self.is_tainted(node.args[0])
+                if tainted:
+                    self.add_finding(
+                        node,
+                        f"Remote Code Execution - Resolved dynamic sink {module_name}.{resolved_func}()",
+                        VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", source,
+                        f"Virtual sink '{node.func.id}' (resolved to {module_name}.{resolved_func} at line {def_line}) "
+                        f"called with tainted data. This is equivalent to calling {module_name}.{resolved_func}() directly."
+                    )
+                else:
+                    # Even without taint, flag the call to a virtual sink
+                    self.add_finding(
+                        node,
+                        f"Potential RCE - Virtual sink {module_name}.{resolved_func}() called",
+                        VulnCategory.COMMAND_INJECTION, Severity.HIGH, "MEDIUM",
+                        description=f"Variable '{node.func.id}' was resolved to {module_name}.{resolved_func}(). "
+                                   f"Verify the argument is not user-controlled."
+                    )
 
         if full_func_name:
             self._check_dangerous_call(node, func_name, full_func_name)
@@ -562,7 +934,8 @@ class PythonTaintTracker(ast.NodeVisitor):
                     )
 
         # ===== CODE INJECTION =====
-        if func_name in ('eval', 'exec', 'compile'):
+        # Exclude re.compile() - it's regex compilation, not code compilation
+        if func_name in ('eval', 'exec', 'compile') and full_func_name != 're.compile':
             if node.args:
                 tainted, source = self.is_tainted(node.args[0])
                 if tainted:
@@ -1004,14 +1377,7 @@ class PythonTaintTracker(ast.NodeVisitor):
                         category=VulnCategory.COMMAND_INJECTION, severity=Severity.HIGH,
                         confidence="HIGH", description="base64 decoded data flows to dangerous sink - likely evasion."
                     ))
-                else:
-                    # Still flag but as lower severity/confidence without dangerous context
-                    self.findings.append(Finding(
-                        file_path=self.file_path, line_number=i, col_offset=0,
-                        line_content=line, vulnerability_name="Potential Evasion - base64 decode",
-                        category=VulnCategory.CODE_INJECTION, severity=Severity.LOW,
-                        confidence="LOW", description="base64 decoding detected. Verify usage context."
-                    ))
+                # Skip flagging base64 decode without dangerous sink - too many false positives
 
             if re.search(r'bytes\.fromhex\s*\(|\.fromhex\s*\(', line):
                 self.findings.append(Finding(
@@ -1022,12 +1388,13 @@ class PythonTaintTracker(ast.NodeVisitor):
                 ))
 
             # 2. Dynamic module/attribute resolution
-            if re.search(r'__import__\s*\(', line):
+            # Skip if inside a string literal or regex pattern (avoid self-detection)
+            if re.search(r'__import__\s*\(', line) and not re.search(r'["\'].*__import__.*["\']', line):
                 self.findings.append(Finding(
                     file_path=self.file_path, line_number=i, col_offset=0,
                     line_content=line, vulnerability_name="Code Evasion - Dynamic __import__",
                     category=VulnCategory.CODE_INJECTION, severity=Severity.HIGH,
-                    confidence="HIGH", description="__import__() enables dynamic module loading to evade detection."
+                    confidence="HIGH", description="Dynamic import enables module loading to evade detection."
                 ))
 
             if re.search(r'getattr\s*\([^,]+,\s*[^)]*\)', line):
@@ -1085,7 +1452,8 @@ class PythonTaintTracker(ast.NodeVisitor):
                 ))
 
             # 7. Context manager hiding subprocess
-            if re.search(r'@contextmanager', line):
+            # Skip if this is a regex pattern definition (avoid self-detection)
+            if re.search(r'@contextmanager', line) and not re.search(r're\.(search|match|compile|findall)', line):
                 context = '\n'.join(self.source_lines[i-1:min(len(self.source_lines), i+15)])
                 if re.search(r'subprocess|Popen|os\.system|shell', context, re.IGNORECASE):
                     self.findings.append(Finding(
@@ -2707,6 +3075,7 @@ class JavaAnalyzer:
         self._check_jndi_injection()
         self._check_script_engine()
         self._check_reflection_injection()
+        self._check_jni_native()
         return self.findings
 
     def _add_finding(self, line_num: int, vuln_name: str, category: VulnCategory,
@@ -2857,32 +3226,94 @@ class JavaAnalyzer:
 
     def _check_deserialization(self):
         """Check for insecure deserialization patterns."""
+        # Track ObjectInputStream-like variables
+        ois_vars = set()
+        base64_decoded_vars = set()
+        stream_vars = set()
+
         for i, line in enumerate(self.source_lines, 1):
             stripped = line.strip()
             if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
                 continue
 
-            # ObjectInputStream.readObject()
-            if re.search(r'ObjectInputStream|\.readObject\s*\(', line):
+            # Track Base64 decoding: byte[] data = Base64.getDecoder().decode(blob)
+            if re.search(r'Base64\s*\.\s*getDecoder\s*\(\s*\)\s*\.\s*decode\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                # Extract variable name
+                var_match = re.match(r'\s*(?:byte\s*\[\s*\]|var)\s+(\w+)\s*=', line)
+                if var_match:
+                    base64_decoded_vars.add(var_match.group(1))
+                if is_tainted:
+                    self._add_finding(i, "Deserialization Risk - Base64 decoding user input",
+                                      VulnCategory.DESERIALIZATION, Severity.MEDIUM, "MEDIUM", taint_var,
+                                      "Base64 decoded data may contain serialized objects.")
+
+            # Track ByteArrayInputStream creation
+            if re.search(r'new\s+ByteArrayInputStream\s*\(', line):
+                var_match = re.match(r'\s*(?:\w+(?:<[^>]+>)?)\s+(\w+)\s*=', line)
+                if var_match:
+                    stream_vars.add(var_match.group(1))
+
+            # Track ObjectInputStream or subclass creation (e.g., CustomFilterStream extends ObjectInputStream)
+            if re.search(r'ObjectInputStream|extends\s+ObjectInputStream', line):
+                var_match = re.match(r'\s*(?:\w+(?:<[^>]+>)?)\s+(\w+)\s*=', line)
+                if var_match:
+                    ois_vars.add(var_match.group(1))
+
+            # Detect .readObject() calls - the critical deserialization sink
+            readobj_match = re.search(r'(\w+)\s*\.\s*readObject\s*\(\s*\)', line)
+            if readobj_match:
+                var_name = readobj_match.group(1)
                 is_tainted, taint_var = self._is_tainted(line)
 
-                # Look for ObjectInputStream creation with tainted data
-                context = '\n'.join(self.source_lines[max(0, i-3):i+1])
-                if re.search(r'new\s+ObjectInputStream\s*\(', context):
-                    if is_tainted:
-                        self._add_finding(i, "Insecure Deserialization - ObjectInputStream with tainted data",
-                                          VulnCategory.DESERIALIZATION, Severity.CRITICAL, "HIGH", taint_var,
-                                          "Deserializing user-controlled data can lead to RCE.")
-                    else:
-                        self._add_finding(i, "Insecure Deserialization - ObjectInputStream usage",
-                                          VulnCategory.DESERIALIZATION, Severity.HIGH, "MEDIUM",
-                                          description="ObjectInputStream.readObject() detected. Verify data source.")
+                # Check broader context for deserialization patterns
+                context = '\n'.join(self.source_lines[max(0, i-15):i+3])
 
-            # XMLDecoder
-            if re.search(r'XMLDecoder|\.readObject\s*\(', line) and 'XMLDecoder' in line:
+                # Look for dangerous patterns in context
+                has_ois = re.search(r'ObjectInputStream|extends\s+ObjectInputStream', context)
+                has_base64 = re.search(r'Base64|decode\s*\(', context)
+                has_stream = re.search(r'ByteArrayInputStream|InputStream', context)
+                has_user_input = re.search(r'request\.|getParameter|getInputStream|blob|data|input|payload', context, re.IGNORECASE)
+
+                if has_ois or var_name in ois_vars:
+                    if is_tainted or has_user_input:
+                        self._add_finding(i, "Insecure Deserialization - readObject() with untrusted data",
+                                          VulnCategory.DESERIALIZATION, Severity.CRITICAL, "HIGH", taint_var,
+                                          "ObjectInputStream.readObject() deserializes untrusted data - RCE possible via gadget chains.")
+                    elif has_base64:
+                        self._add_finding(i, "Insecure Deserialization - readObject() on decoded data",
+                                          VulnCategory.DESERIALIZATION, Severity.CRITICAL, "HIGH",
+                                          description="readObject() called on Base64-decoded data - likely deserialization attack vector.")
+                    else:
+                        self._add_finding(i, "Insecure Deserialization - readObject() usage",
+                                          VulnCategory.DESERIALIZATION, Severity.HIGH, "MEDIUM",
+                                          description="ObjectInputStream.readObject() detected. Verify data source is trusted.")
+
+            # XMLDecoder - always dangerous
+            if re.search(r'XMLDecoder', line):
                 self._add_finding(i, "Insecure Deserialization - XMLDecoder",
                                   VulnCategory.DESERIALIZATION, Severity.CRITICAL, "HIGH",
                                   description="XMLDecoder is dangerous and can lead to RCE.")
+
+            # Kryo, XStream, SnakeYAML - other dangerous deserializers
+            if re.search(r'Kryo\s*\(\s*\)|\.readClassAndObject\s*\(|\.readObject\s*\(.*Kryo', line):
+                self._add_finding(i, "Insecure Deserialization - Kryo",
+                                  VulnCategory.DESERIALIZATION, Severity.HIGH, "MEDIUM",
+                                  description="Kryo deserialization detected. Ensure proper class filtering.")
+
+            if re.search(r'XStream\s*\(\s*\)|\.fromXML\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                severity = Severity.CRITICAL if is_tainted else Severity.HIGH
+                self._add_finding(i, "Insecure Deserialization - XStream",
+                                  VulnCategory.DESERIALIZATION, severity, "HIGH" if is_tainted else "MEDIUM",
+                                  description="XStream.fromXML() can lead to RCE. Use security framework.")
+
+            if re.search(r'Yaml\s*\(\s*\)|\.load\s*\(.*Yaml', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "Insecure Deserialization - SnakeYAML with tainted data",
+                                      VulnCategory.DESERIALIZATION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "SnakeYAML.load() with user input enables RCE.")
 
     def _check_ssrf(self):
         """Check for SSRF patterns."""
@@ -3083,6 +3514,71 @@ class JavaAnalyzer:
                     self._add_finding(i, "Code Injection - Reflection newInstance with tainted data",
                                       VulnCategory.CODE_INJECTION, Severity.HIGH, "MEDIUM", taint_var,
                                       "Reflection-based object creation with user data.")
+
+    def _check_jni_native(self):
+        """Check for JNI native method patterns - taint can escape to C/C++ code."""
+        native_methods = {}  # method_name -> line_number
+        loadlibrary_found = False
+        loadlibrary_line = 0
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+                continue
+
+            # Detect native method declarations: public native void methodName(...)
+            native_match = re.search(r'\bnative\b\s+\w+\s+(\w+)\s*\(', line)
+            if native_match:
+                method_name = native_match.group(1)
+                native_methods[method_name] = i
+                self._add_finding(i, "Evasion - JNI Native Method Declaration",
+                                  VulnCategory.CODE_INJECTION, Severity.MEDIUM, "MEDIUM",
+                                  description=f"Native method '{method_name}' declared. "
+                                             f"Code execution escapes to C/C++ - static analysis cannot follow.")
+
+            # Detect System.loadLibrary() - loading native code
+            if re.search(r'System\s*\.\s*loadLibrary\s*\(', line):
+                loadlibrary_found = True
+                loadlibrary_line = i
+                self._add_finding(i, "Evasion - Native Library Loading",
+                                  VulnCategory.CODE_INJECTION, Severity.HIGH, "HIGH",
+                                  description="System.loadLibrary() loads native code. "
+                                             "Potential for hidden command execution in C/C++ code.")
+
+            # Detect System.load() - loading native code by path
+            if re.search(r'System\s*\.\s*load\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                severity = Severity.CRITICAL if is_tainted else Severity.HIGH
+                self._add_finding(i, "Evasion - Native Library Path Loading",
+                                  VulnCategory.CODE_INJECTION, severity, "HIGH" if is_tainted else "MEDIUM",
+                                  description="System.load() loads native library by path. "
+                                             "Can load arbitrary native code.")
+
+        # Check for calls to native methods with tainted data
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+                continue
+
+            for method_name, decl_line in native_methods.items():
+                # Look for calls to the native method
+                call_match = re.search(rf'\b{method_name}\s*\(([^)]*)\)', line)
+                if call_match and i != decl_line:
+                    is_tainted, taint_var = self._is_tainted(line)
+                    args = call_match.group(1)
+
+                    if is_tainted:
+                        self._add_finding(i, f"Critical Evasion - Tainted data flows to native method '{method_name}'",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                          f"User-controlled data passes to native method '{method_name}()'. "
+                                          f"Native code at line {decl_line} may execute arbitrary commands. "
+                                          f"Static analysis cannot verify safety.")
+                    elif loadlibrary_found:
+                        self._add_finding(i, f"Potential RCE - Native method '{method_name}' called",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "MEDIUM",
+                                          description=f"Native method '{method_name}()' called. "
+                                                     f"Verify arguments are not user-controlled. "
+                                                     f"Native library loaded at line {loadlibrary_line}.")
 
 
 class PHPAnalyzer:
