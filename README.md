@@ -344,16 +344,18 @@ FILE: models/UserPrefs.php
 
 ## 🌐 Language Support
 
-| Language | Extensions | Frameworks | 2nd-Order Detection |
-|----------|------------|------------|:-------------------:|
-| **Java** | `.java` | Spring, JPA/Hibernate, Criteria API | ✅ |
-| **C#** | `.cs` | ASP.NET, Entity Framework, EF Core | ✅ |
-| **JavaScript** | `.js`, `.jsx` | Express, Mongoose, Sequelize | ✅ |
-| **TypeScript** | `.ts`, `.tsx` | Node.js, TypeORM | ✅ |
-| **Python** | `.py` | Flask, Django, SQLAlchemy, Pandas | ✅ |
-| **PHP** | `.php` | Laravel, PDO, mysqli | ✅ |
-| **Go** | `.go` | GORM, database/sql | ✅ |
-| **Ruby** | `.rb` | Rails, ActiveRecord | ✅ |
+| Language | Extensions | Frameworks | 2nd-Order | Status |
+|----------|------------|------------|:---------:|:------:|
+| **Java** | `.java` | Spring, JPA/Hibernate, Criteria API | ✅ | Full |
+| **C#** | `.cs` | ASP.NET, Entity Framework, EF Core | ✅ | Full |
+| **JavaScript** | `.js`, `.jsx` | Express, Mongoose, Sequelize | ✅ | Full |
+| **TypeScript** | `.ts`, `.tsx` | Node.js, TypeORM | ✅ | Full |
+| **Python** | `.py` | Flask, Django, SQLAlchemy, Pandas | ✅ | Full |
+| **PHP** | `.php` | Laravel, PDO, mysqli | ✅ | Full |
+| **Go** | `.go` | GORM, database/sql | ⚠️ | Basic |
+| **Ruby** | `.rb` | Rails, ActiveRecord | ⚠️ | Basic |
+
+> ⚠️ **Note:** Go and Ruby support is basic and not comprehensive. Core vulnerability patterns are detected, but advanced 2nd-order flows and framework-specific sinks may be missing. Contributions welcome!
 
 ---
 
