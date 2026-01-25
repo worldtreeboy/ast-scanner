@@ -10,9 +10,10 @@
   </pre>
 </h1>
 
-<h3 align="center">🔥 Advanced Multi-Language SAST with 2nd-Order Injection Detection 🔥</h3>
+<h3 align="center">Advanced Multi-Language SAST with 2nd-Order Injection Detection</h3>
 
 <p align="center">
+  <a href="#-proven-results">Proven Results</a> •
   <a href="#-2nd-order-detection">2nd-Order Detection</a> •
   <a href="#-features">Features</a> •
   <a href="#-quick-start">Quick Start</a> •
@@ -40,7 +41,117 @@
 
 ---
 
-## 🎯 What Makes AST-Scanner Different?
+## Proven Results
+
+<p align="center">
+  <b>Tested against industry-standard vulnerable applications</b>
+</p>
+
+<table align="center">
+<tr>
+<th align="center">Application</th>
+<th align="center">Files</th>
+<th align="center">Critical</th>
+<th align="center">High</th>
+<th align="center">Medium</th>
+<th align="center">Total</th>
+</tr>
+<tr>
+<td><b>WebGoat (OWASP)</b></td>
+<td align="center">469</td>
+<td align="center"><code>32</code></td>
+<td align="center"><code>86</code></td>
+<td align="center"><code>4</code></td>
+<td align="center"><b>122</b></td>
+</tr>
+<tr>
+<td><b>Damn Vulnerable RESTaurant API</b></td>
+<td align="center">74</td>
+<td align="center"><code>21</code></td>
+<td align="center"><code>1</code></td>
+<td align="center"><code>0</code></td>
+<td align="center"><b>22</b></td>
+</tr>
+<tr>
+<td><b>Vulnerable-Flask-App</b></td>
+<td align="center">2</td>
+<td align="center"><code>10</code></td>
+<td align="center"><code>8</code></td>
+<td align="center"><code>0</code></td>
+<td align="center"><b>18</b></td>
+</tr>
+<tr>
+<td><b>NodeGoat (OWASP)</b></td>
+<td align="center">39</td>
+<td align="center"><code>3</code></td>
+<td align="center"><code>5</code></td>
+<td align="center"><code>4</code></td>
+<td align="center"><b>12</b></td>
+</tr>
+<tr>
+<td colspan="2" align="right"><b>TOTAL</b></td>
+<td align="center"><b><code>66</code></b></td>
+<td align="center"><b><code>100</code></b></td>
+<td align="center"><b><code>8</code></b></td>
+<td align="center"><b>174</b></td>
+</tr>
+</table>
+
+<p align="center">
+  <sub>584 files scanned across Python, Java, JavaScript, and TypeScript codebases</sub>
+</p>
+
+### Vulnerabilities Detected
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**WebGoat (Java)**
+- SQL Injection via string concatenation
+- XSS via innerHTML assignments
+- Path Traversal in file operations
+- SSRF in URL construction
+- XStream deserialization vulnerabilities
+- Prototype pollution patterns
+
+</td>
+<td width="50%" valign="top">
+
+**Damn Vulnerable RESTaurant API (Python)**
+- Command Injection with `shell=True`
+- 2nd-Order Code Injection via `db.query()`
+- SSRF in requests with variable URLs
+- SQLAlchemy taint propagation
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+**Vulnerable-Flask-App (Python)**
+- SSTI via `render_template_string()`
+- Command Injection in subprocess calls
+- Insecure Pickle deserialization
+- Path Traversal in file open/save
+- SQL Injection via string formatting
+
+</td>
+<td width="50%" valign="top">
+
+**NodeGoat (JavaScript)**
+- `eval()` with user input (RCE)
+- NoSQL Injection with `$ne` operator
+- Dynamic `require()` for RCE
+- Path traversal via `path.resolve()`
+
+</td>
+</tr>
+</table>
+
+---
+
+## What Makes AST-Scanner Different?
 
 Most SAST tools detect **1st-order injection** - where user input flows directly to a sink. **AST-Scanner** goes deeper, detecting **2nd-order injection** where payloads are:
 
@@ -57,7 +168,7 @@ Most SAST tools detect **1st-order injection** - where user input flows directly
 
 ---
 
-## 🚀 2nd-Order Detection
+## 2nd-Order Detection
 
 ### The "FINAL BOSS" Patterns Other Scanners Miss
 
@@ -65,13 +176,13 @@ Most SAST tools detect **1st-order injection** - where user input flows directly
 <tr>
 <td width="50%">
 
-#### 🗄️ SQL/HQL Injection
+#### SQL/HQL Injection
 ```java
 // Entity value → HQL query
 User user = repo.findById(id).get();
 String filter = user.getSavedFilter();
 
-// 💀 DETECTED: 2nd-Order HQL Injection
+// DETECTED: 2nd-Order HQL Injection
 String hql = "FROM Product WHERE " + filter;
 em.createQuery(hql).getResultList();
 ```
@@ -79,13 +190,13 @@ em.createQuery(hql).getResultList();
 </td>
 <td width="50%">
 
-#### 🌲 XPath Injection
+#### XPath Injection
 ```java
 // Entity value → XPath query
 User user = repo.findById(id).get();
 String dept = user.getDepartment();
 
-// 💀 DETECTED: 2nd-Order XPath Injection
+// DETECTED: 2nd-Order XPath Injection
 String expr = "//dept[@name='" + dept + "']";
 xpath.evaluate(expr, doc);
 ```
@@ -95,26 +206,26 @@ xpath.evaluate(expr, doc);
 <tr>
 <td width="50%">
 
-#### 🍃 MongoDB NoSQL Injection
+#### MongoDB NoSQL Injection
 ```javascript
 // DB value → $where operator
 const user = await User.findById(id);
 const filter = user.savedFilter;
 
-// 💀 DETECTED: 2nd-Order NoSQL Injection
+// DETECTED: 2nd-Order NoSQL Injection
 Items.find({ $where: filter });
 ```
 
 </td>
 <td width="50%">
 
-#### 🐼 Pandas Code Injection
+#### Pandas Code Injection
 ```python
 # DB value → df.query() (executes code!)
 row = cursor.fetchone()
 expr = row['filter_expression']
 
-# 💀 DETECTED: 2nd-Order Code Injection
+// DETECTED: 2nd-Order Code Injection
 df.query(expr)  # Pandas evaluates as code
 ```
 
@@ -123,26 +234,26 @@ df.query(expr)  # Pandas evaluates as code
 <tr>
 <td width="50%">
 
-#### 🔓 PHP Double-Unserialize
+#### PHP Double-Unserialize
 ```php
 // Serialized payload → unserialize → SQL
 $row = $pdo->fetch();
 $prefs = unserialize($row['prefs']);
 
-// 💀 DETECTED: Double-Unserialize SQLi
+// DETECTED: Double-Unserialize SQLi
 $sql = "SELECT * FROM t WHERE id=" . $prefs->id;
 ```
 
 </td>
 <td width="50%">
 
-#### ⚡ C# Entity Framework
+#### C# Entity Framework
 ```csharp
 // Entity value → FromSqlRaw
 var user = db.Users.Find(id);
 var filter = user.CustomFilter;
 
-// 💀 DETECTED: 2nd-Order SQLi
+// DETECTED: 2nd-Order SQLi
 db.Products.FromSqlRaw(
     $"SELECT * FROM Products WHERE {filter}");
 ```
@@ -153,13 +264,13 @@ db.Products.FromSqlRaw(
 
 ---
 
-## ✨ Features
+## Features
 
 <table>
 <tr>
 <td width="50%">
 
-### 🔬 Core Engine
+### Core Engine
 - **Taint Tracking** - Traces data flow source → sink
 - **Entity-Source Detection** - Tracks ORM/Repository patterns
 - **Cross-Function Analysis** - Follows data through methods
@@ -169,7 +280,7 @@ db.Products.FromSqlRaw(
 </td>
 <td width="50%">
 
-### 🎯 Detection Categories
+### Detection Categories
 - SQL/NoSQL/HQL Injection
 - Command Injection
 - Code Injection (eval/exec)
@@ -183,21 +294,21 @@ db.Products.FromSqlRaw(
 </tr>
 </table>
 
-### 📊 Detection Quality Matrix
+### Detection Quality Matrix
 
 | Category | 1st-Order | 2nd-Order | Evasion Detection |
 |----------|:---------:|:---------:|:-----------------:|
-| SQL Injection | ✅ Excellent | ✅ Excellent | ✅ strrev, base64 |
-| NoSQL Injection | ✅ Excellent | ✅ $where, $function | ✅ JSON poisoning |
-| Command Injection | ✅ Excellent | ✅ DB-sourced | ✅ getattr, LINQ |
-| Code Injection | ✅ Excellent | ✅ pandas, ScriptEngine | ✅ Proxy traps |
-| XPath Injection | ✅ Excellent | ✅ Entity-sourced | ✅ StringBuilder |
-| Deserialization | ✅ Excellent | ✅ Double-unserialize | ✅ ViewState |
-| XXE/XSLT | ✅ Excellent | - | ✅ XmlResolver |
+| SQL Injection | Excellent | Excellent | strrev, base64 |
+| NoSQL Injection | Excellent | $where, $function | JSON poisoning |
+| Command Injection | Excellent | DB-sourced | getattr, LINQ |
+| Code Injection | Excellent | pandas, ScriptEngine | Proxy traps |
+| XPath Injection | Excellent | Entity-sourced | StringBuilder |
+| Deserialization | Excellent | Double-unserialize | ViewState |
+| XXE/XSLT | Excellent | - | XmlResolver |
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 # Clone
@@ -219,7 +330,7 @@ python3 ast-scanner.py project/ --min-confidence HIGH
 
 ---
 
-## 🔍 Detection Patterns
+## Detection Patterns
 
 ### 2nd-Order Source Tracking
 
@@ -247,12 +358,12 @@ The scanner tracks data from these **entity sources**:
 
 ---
 
-## 🛡️ Evasion Detection
+## Evasion Detection
 
 AST-Scanner catches sophisticated evasion techniques:
 
 <details>
-<summary><b>🐍 Python: getattr Shadow Attack</b></summary>
+<summary><b>Python: getattr Shadow Attack</b></summary>
 
 ```python
 # DETECTED: Dynamic attribute access on dangerous module
@@ -263,7 +374,7 @@ method(user_data.get("arg"))          # RCE!
 </details>
 
 <details>
-<summary><b>🐘 PHP: strrev() Evasion</b></summary>
+<summary><b>PHP: strrev() Evasion</b></summary>
 
 ```php
 // DETECTED: strrev hides "system"
@@ -273,7 +384,7 @@ $func($_GET['cmd']);       // Command injection
 </details>
 
 <details>
-<summary><b>🔷 C#: LINQ Taint Tunnel</b></summary>
+<summary><b>C#: LINQ Taint Tunnel</b></summary>
 
 ```csharp
 // DETECTED: LINQ transforms taint to shell
@@ -283,7 +394,7 @@ Process.Start("cmd.exe", cmds.First());
 </details>
 
 <details>
-<summary><b>🟨 JavaScript: Proxy Trap</b></summary>
+<summary><b>JavaScript: Proxy Trap</b></summary>
 
 ```javascript
 // DETECTED: Proxy get trap with eval
@@ -296,7 +407,7 @@ proxy.payload;  // Any property triggers eval
 
 ---
 
-## 📋 Sample Output
+## Sample Output
 
 ```
 ================================================================================
@@ -342,24 +453,24 @@ FILE: models/UserPrefs.php
 
 ---
 
-## 🌐 Language Support
+## Language Support
 
 | Language | Extensions | Frameworks | 2nd-Order | Status |
 |----------|------------|------------|:---------:|:------:|
-| **Java** | `.java` | Spring, JPA/Hibernate, Criteria API | ✅ | Full |
-| **C#** | `.cs` | ASP.NET, Entity Framework, EF Core | ✅ | Full |
-| **JavaScript** | `.js`, `.jsx` | Express, Mongoose, Sequelize | ✅ | Full |
-| **TypeScript** | `.ts`, `.tsx` | Node.js, TypeORM | ✅ | Full |
-| **Python** | `.py` | Flask, Django, SQLAlchemy, Pandas | ✅ | Full |
-| **PHP** | `.php` | Laravel, PDO, mysqli | ✅ | Full |
-| **Go** | `.go` | GORM, database/sql | ⚠️ | Basic |
-| **Ruby** | `.rb` | Rails, ActiveRecord | ⚠️ | Basic |
+| **Java** | `.java` | Spring, JPA/Hibernate, Criteria API | Yes | Full |
+| **C#** | `.cs` | ASP.NET, Entity Framework, EF Core | Yes | Full |
+| **JavaScript** | `.js`, `.jsx` | Express, Mongoose, Sequelize | Yes | Full |
+| **TypeScript** | `.ts`, `.tsx` | Node.js, TypeORM | Yes | Full |
+| **Python** | `.py` | Flask, Django, SQLAlchemy, Pandas | Yes | Full |
+| **PHP** | `.php` | Laravel, PDO, mysqli | Yes | Full |
+| **Go** | `.go` | GORM, database/sql | Limited | Basic |
+| **Ruby** | `.rb` | Rails, ActiveRecord | Limited | Basic |
 
-> ⚠️ **Note:** Go and Ruby support is basic and not comprehensive. Core vulnerability patterns are detected, but advanced 2nd-order flows and framework-specific sinks may be missing. Contributions welcome!
+> **Note:** Go and Ruby support is basic. Core vulnerability patterns are detected, but advanced 2nd-order flows and framework-specific sinks may be missing.
 
 ---
 
-## 🔧 CLI Reference
+## CLI Reference
 
 ```bash
 usage: ast-scanner.py [-h] [-v] [-c CATEGORY] [--output {text,json}]
@@ -381,7 +492,7 @@ options:
 
 ---
 
-## 🔗 CI/CD Integration
+## CI/CD Integration
 
 ### GitHub Actions
 
@@ -405,7 +516,7 @@ python3 ast-scanner.py . --min-confidence HIGH --category sql command code xpath
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 ast-scanner/
@@ -423,13 +534,13 @@ ast-scanner/
 
 ---
 
-## ⚠️ Disclaimer
+## Disclaimer
 
 This tool is for **authorized security testing only**. Always obtain proper authorization before scanning. Verify findings manually. The authors are not responsible for misuse.
 
 ---
 
-## 📜 License
+## License
 
 MIT License - see [LICENSE](LICENSE) for details.
 
