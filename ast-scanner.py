@@ -293,6 +293,9 @@ class PythonTaintTracker(ast.NodeVisitor):
         # Track functions that return virtual sinks
         self.virtual_sink_factories: Dict[str, Tuple[str, int]] = {}  # func_name -> (pattern, line)
 
+        # 2nd-order detection: Track DB-sourced variables (SQLAlchemy/Django ORM)
+        self.db_sourced_vars: Dict[str, Tuple[int, str]] = {}  # var -> (line, source description)
+
     def get_line_content(self, lineno: int) -> str:
         """Get the source line content."""
         if 1 <= lineno <= len(self.source_lines):
@@ -1606,11 +1609,148 @@ class PythonTaintTracker(ast.NodeVisitor):
                         confidence="MEDIUM", description="MongoDB query built from user-controlled dict."
                     ))
 
+    def _track_database_sources(self):
+        """Track variables that receive values from database/ORM queries.
+
+        Patterns detected:
+        - SQLAlchemy: session.query(), session.execute(), Model.query.filter(), etc.
+        - Django ORM: Model.objects.get(), Model.objects.filter(), etc.
+        - Raw DB: cursor.fetchone(), cursor.fetchall(), cursor.fetchmany()
+        """
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('#'):
+                continue
+
+            # SQLAlchemy patterns: result = session.query(Model).first()
+            match = re.search(r'(\w+)\s*=\s*\w+\.query\s*\(.*\)\.(?:first|one|all|scalar|one_or_none)\s*\(', line)
+            if match:
+                var_name = match.group(1)
+                self.db_sourced_vars[var_name] = (i, "SQLAlchemy query result")
+                continue
+
+            # SQLAlchemy session.execute pattern
+            match = re.search(r'(\w+)\s*=\s*\w+\.execute\s*\(.*\)\.(?:fetchone|fetchall|scalar|scalars|first)\s*\(', line)
+            if match:
+                var_name = match.group(1)
+                self.db_sourced_vars[var_name] = (i, "SQLAlchemy execute result")
+                continue
+
+            # Django ORM: obj = Model.objects.get() / filter().first()
+            match = re.search(r'(\w+)\s*=\s*\w+\.objects\.(?:get|filter|exclude|all)\s*\(.*\)(?:\.(?:first|last))?\s*\(?\)?', line)
+            if match:
+                var_name = match.group(1)
+                self.db_sourced_vars[var_name] = (i, "Django ORM query")
+                continue
+
+            # Raw cursor fetch: row = cursor.fetchone()
+            match = re.search(r'(\w+)\s*=\s*\w+\.(?:fetchone|fetchall|fetchmany)\s*\(', line)
+            if match:
+                var_name = match.group(1)
+                self.db_sourced_vars[var_name] = (i, "Database cursor fetch")
+                continue
+
+            # Pandas read_sql: df = pd.read_sql()
+            match = re.search(r'(\w+)\s*=\s*(?:pd|pandas)\.read_sql(?:_query|_table)?\s*\(', line)
+            if match:
+                var_name = match.group(1)
+                self.db_sourced_vars[var_name] = (i, "pandas.read_sql (DB-sourced DataFrame)")
+                continue
+
+            # Track attribute access on DB-sourced objects
+            for db_var in list(self.db_sourced_vars.keys()):
+                # Pattern: value = obj.field or value = obj['field']
+                match = re.search(rf'(\w+)\s*=\s*{re.escape(db_var)}\.(\w+)', line)
+                if match:
+                    new_var = match.group(1)
+                    field_name = match.group(2)
+                    orig_line, orig_source = self.db_sourced_vars[db_var]
+                    self.db_sourced_vars[new_var] = (i, f"{orig_source}.{field_name}")
+
+                # Dict access: value = obj['field']
+                match = re.search(rf"(\w+)\s*=\s*{re.escape(db_var)}\s*\[\s*['\"](\w+)['\"]\s*\]", line)
+                if match:
+                    new_var = match.group(1)
+                    field_name = match.group(2)
+                    orig_line, orig_source = self.db_sourced_vars[db_var]
+                    self.db_sourced_vars[new_var] = (i, f"{orig_source}['{field_name}']")
+
+    def _is_db_sourced(self, line: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Check if a line contains DB-sourced variable usage."""
+        for var, (src_line, source) in self.db_sourced_vars.items():
+            # Check for variable in the line (not in comments)
+            if re.search(rf'\b{re.escape(var)}\b', line):
+                return True, var, source
+        return False, None, None
+
+    def _check_pandas_query_injection(self):
+        """Detect code injection via pandas df.query() with DB-sourced values.
+
+        Pattern: df.query(db_value) executes the string as a query expression,
+        which can include Python code via @ references or backticks.
+        """
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('#'):
+                continue
+
+            # pandas DataFrame.query() pattern
+            if re.search(r'\.query\s*\(', line):
+                # Skip safe SQL patterns (parameterized)
+                if re.search(r'\.query\s*\(\s*["\']', line) and not re.search(r'\.query\s*\(\s*f["\']', line):
+                    # Literal string query - likely safe unless f-string
+                    continue
+
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self.findings.append(Finding(
+                        file_path=self.file_path, line_number=i, col_offset=0,
+                        line_content=self.source_lines[i-1],
+                        vulnerability_name="2nd-Order Code Injection - pandas df.query() with DB-sourced value",
+                        category=VulnCategory.CODE_INJECTION, severity=Severity.CRITICAL,
+                        confidence="HIGH",
+                        description=f"DB value from {source} passed to df.query(). "
+                                   f"Pandas query() evaluates strings as expressions with @var and `code` syntax."
+                    ))
+
+            # pandas DataFrame.eval() pattern - similar risk
+            if re.search(r'\.eval\s*\(', line):
+                if re.search(r'\.eval\s*\(\s*["\']', line) and not re.search(r'\.eval\s*\(\s*f["\']', line):
+                    continue
+
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self.findings.append(Finding(
+                        file_path=self.file_path, line_number=i, col_offset=0,
+                        line_content=self.source_lines[i-1],
+                        vulnerability_name="2nd-Order Code Injection - pandas df.eval() with DB-sourced value",
+                        category=VulnCategory.CODE_INJECTION, severity=Severity.CRITICAL,
+                        confidence="HIGH",
+                        description=f"DB value from {source} passed to df.eval(). "
+                                   f"Pandas eval() evaluates strings as code expressions."
+                    ))
+
+            # pd.eval() global function
+            if re.search(r'(?:pd|pandas)\.eval\s*\(', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self.findings.append(Finding(
+                        file_path=self.file_path, line_number=i, col_offset=0,
+                        line_content=self.source_lines[i-1],
+                        vulnerability_name="2nd-Order Code Injection - pd.eval() with DB-sourced value",
+                        category=VulnCategory.CODE_INJECTION, severity=Severity.CRITICAL,
+                        confidence="HIGH",
+                        description=f"DB value from {source} passed to pandas.eval(). "
+                                   f"This function evaluates strings as Python expressions."
+                    ))
+
 
 class JavaScriptAnalyzer:
     """
     Basic JavaScript/TypeScript analyzer using regex-enhanced pattern matching.
     For production use, consider integrating with esprima or typescript parser.
+    Includes 2nd-order NoSQL detection for:
+    - MongoDB $where operator with DB-sourced JavaScript
+    - $accumulator/$function with DB-sourced code
+    - Command injection via DB-stored usernames/values
     """
 
     def __init__(self, source_code: str, file_path: str):
@@ -1621,7 +1761,11 @@ class JavaScriptAnalyzer:
 
         # Track variable assignments for basic taint tracking
         self.tainted_vars: Set[str] = set()
+        # 2nd-order tracking: variables from DB queries
+        self.db_sourced_vars: Dict[str, Tuple[int, str]] = {}  # var -> (line, source)
+
         self._identify_taint_sources()
+        self._track_database_sources()
 
     def _identify_taint_sources(self):
         """Identify variables that hold user input."""
@@ -1686,6 +1830,60 @@ class JavaScriptAnalyzer:
                         if re.search(rf'\$\{{\s*{re.escape(tainted_var)}\s*\}}', rhs):
                             self.tainted_vars.add(var_name)
                             break
+
+    def _track_database_sources(self):
+        """Track variables that receive values from database queries (Mongoose, MongoDB, Sequelize)."""
+        # Mongoose/MongoDB query patterns
+        db_patterns = [
+            (r'(?:const|let|var)\s+(\w+)\s*=\s*await\s+(\w+)\.findOne\s*\(', 'findOne'),
+            (r'(?:const|let|var)\s+(\w+)\s*=\s*await\s+(\w+)\.findById\s*\(', 'findById'),
+            (r'(?:const|let|var)\s+(\w+)\s*=\s*await\s+(\w+)\.find\s*\(', 'find'),
+            (r'(?:const|let|var)\s+(\w+)\s*=\s*await\s+db\.(\w+)\.findOne\s*\(', 'db.findOne'),
+            (r'(?:const|let|var)\s+(\w+)\s*=\s*await\s+db\.collection\([\'"](\w+)[\'"]\)\.findOne\s*\(', 'collection.findOne'),
+            # Sequelize patterns
+            (r'(?:const|let|var)\s+(\w+)\s*=\s*await\s+(\w+)\.findOne\s*\(', 'Sequelize.findOne'),
+            (r'(?:const|let|var)\s+(\w+)\s*=\s*await\s+(\w+)\.findByPk\s*\(', 'Sequelize.findByPk'),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            for pattern, source_type in db_patterns:
+                match = re.search(pattern, line)
+                if match:
+                    var_name = match.group(1)
+                    model_name = match.group(2)
+                    self.db_sourced_vars[var_name] = (i, f"{model_name}.{source_type}")
+
+        # Track property access on DB-sourced objects
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            for entity_var in list(self.db_sourced_vars.keys()):
+                # Pattern: entity.property or entity['property']
+                prop_patterns = [
+                    rf'(?:const|let|var)\s+(\w+)\s*=\s*{re.escape(entity_var)}\.(\w+)',
+                    rf'(\w+)\s*=\s*{re.escape(entity_var)}\.(\w+)',
+                    rf'{re.escape(entity_var)}\[[\'""](\w+)[\'""]\]',
+                ]
+                for prop_pattern in prop_patterns[:2]:
+                    match = re.search(prop_pattern, line)
+                    if match:
+                        new_var = match.group(1)
+                        prop_name = match.group(2)
+                        orig_line, orig_source = self.db_sourced_vars[entity_var]
+                        self.db_sourced_vars[new_var] = (i, f"{orig_source}.{prop_name}")
+
+    def _is_db_sourced(self, line: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Check if line uses a database-sourced variable."""
+        for var, (src_line, source) in self.db_sourced_vars.items():
+            if re.search(rf'\b{re.escape(var)}\b', line):
+                return True, var, source
+        return False, None, None
 
     def get_line_content(self, lineno: int) -> str:
         """Get the source line content."""
@@ -1766,6 +1964,9 @@ class JavaScriptAnalyzer:
         self._check_auth_bypass()
         self._check_xss()
         self._check_evasive_xss()
+        # 2nd-order detection
+        self._check_second_order_nosql()
+        self._check_second_order_cmdi()
         return self.findings
 
     def _add_finding(self, line_num: int, vuln_name: str, category: VulnCategory,
@@ -3533,11 +3734,83 @@ class JavaScriptAnalyzer:
                                           "Proxy handler 'apply' trap contains dangerous sink. "
                                           "Calling the proxy as a function executes malicious code.")
 
+    def _check_second_order_nosql(self):
+        """Detect 2nd-order NoSQL injection with DB-sourced values in MongoDB operators."""
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            # $where operator with DB-sourced JavaScript (the most dangerous)
+            if re.search(r'\$where\s*:', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(i, "2nd-Order NoSQL Injection - $where with DB-sourced JavaScript",
+                                      VulnCategory.NOSQL_INJECTION, Severity.CRITICAL, "HIGH",
+                                      f"MongoDB $where executes JavaScript from {source}. "
+                                      "Stored payload: 'function() {{ return this.password.length > 0; }}' "
+                                      "enables data exfiltration via side-channels.")
+
+            # $accumulator / $function operators (MongoDB 4.4+)
+            if re.search(r'\$(?:accumulator|function)\s*:', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(i, "2nd-Order NoSQL Injection - $function with DB-sourced code",
+                                      VulnCategory.NOSQL_INJECTION, Severity.CRITICAL, "HIGH",
+                                      f"MongoDB aggregation operator executes code from {source}. "
+                                      "Stored JavaScript payload can access/modify any data.")
+
+            # eval-like patterns in MongoDB context
+            if re.search(r'\.find\s*\(\s*\{', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db and re.search(r'\$where|\$function|\$accumulator', line):
+                    self._add_finding(i, "2nd-Order NoSQL Injection - Query with DB-sourced operator value",
+                                      VulnCategory.NOSQL_INJECTION, Severity.CRITICAL, "HIGH",
+                                      f"MongoDB query uses DB-sourced value from {source} in dangerous operator.")
+
+    def _check_second_order_cmdi(self):
+        """Detect 2nd-order command injection with DB-sourced values."""
+        cmd_patterns = [
+            (r'exec\s*\(', 'exec'),
+            (r'execSync\s*\(', 'execSync'),
+            (r'spawn\s*\(', 'spawn'),
+            (r'spawnSync\s*\(', 'spawnSync'),
+            (r'execFile\s*\(', 'execFile'),
+            (r'fork\s*\(', 'fork'),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            for pattern, func_name in cmd_patterns:
+                if re.search(pattern, line):
+                    is_db, db_var, source = self._is_db_sourced(line)
+                    if is_db:
+                        self._add_finding(i, f"2nd-Order Command Injection - {func_name}() with DB-sourced value",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH",
+                                          f"Shell command uses value from {source}. "
+                                          "Stored payload: 'worldtree; rm -rf /' can wipe the system.")
+
+            # Template literal in shell command
+            if re.search(r'exec\s*\(\s*`', line) or re.search(r'spawn\s*\(\s*`', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(i, "2nd-Order Command Injection - Template literal with DB-sourced value",
+                                      VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH",
+                                      f"Shell command template uses value from {source}.")
+
 
 class JavaAnalyzer:
     """
     Java analyzer using regex-enhanced pattern matching with taint tracking.
     Tracks variable assignments and method parameters to detect tainted data flow.
+    Includes 2nd-order SQLi detection for:
+    - JPA/Hibernate entity getters (entityManager.find().getX())
+    - Hibernate Criteria API (root.get(storedProperty))
+    - HQL/JPQL function injection (createQuery with string concat)
+    - Table name injection (native queries with entity-sourced tables)
     """
 
     def __init__(self, source_code: str, file_path: str):
@@ -3553,11 +3826,15 @@ class JavaAnalyzer:
         # Lambda tracking for functional interface taint flow
         self.lambda_definitions: Dict[str, dict] = {}  # var_name -> {params, body_lines, sinks}
 
+        # 2nd-order SQLi tracking
+        self.db_sourced_vars: Dict[str, Tuple[int, str]] = {}  # var -> (line, entity source)
+
         # Pre-analyze to identify taint sources
         self._identify_method_params()
         self._identify_lambda_definitions()
         self._track_variable_assignments()
         self._track_lambda_taint_flow()
+        self._track_database_sources()
 
     def _identify_method_params(self):
         """Identify method parameters as potential taint sources."""
@@ -3776,6 +4053,68 @@ class JavaAnalyzer:
                             if param not in self.tainted_vars:
                                 self.tainted_vars[param] = i
 
+    def _track_database_sources(self):
+        """Track variables that receive values from JPA/Hibernate entities (2nd-order sources)."""
+        # JPA/Hibernate entity fetch patterns
+        entity_patterns = [
+            (r'(\w+)\s*=\s*\w+\.find\s*\(\s*\w+\.class', 'EntityManager.find'),
+            (r'(\w+)\s*=\s*\w+\.findById\s*\(', 'Repository.findById'),
+            (r'(\w+)\s*=\s*\w+\.getOne\s*\(', 'Repository.getOne'),
+            (r'(\w+)\s*=\s*\w+\.getReferenceById\s*\(', 'Repository.getReferenceById'),
+            (r'(\w+)\s*=\s*\w+Repo(?:sitory)?\.find', 'Repository.find'),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+                continue
+
+            for pattern, source_type in entity_patterns:
+                match = re.search(pattern, line)
+                if match:
+                    var_name = match.group(1)
+                    self.db_sourced_vars[var_name] = (i, source_type)
+
+        # Track getter calls on entities: String val = entity.getSomeField();
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+                continue
+
+            for entity_var in list(self.db_sourced_vars.keys()):
+                # Pattern: var = entity.getXxx() or entity.xxx
+                getter_pattern = rf'(\w+)\s*=\s*{re.escape(entity_var)}\.(?:get)?(\w+)\s*\('
+                match = re.search(getter_pattern, line)
+                if match:
+                    new_var = match.group(1)
+                    getter_name = match.group(2)
+                    orig_line, orig_source = self.db_sourced_vars[entity_var]
+                    self.db_sourced_vars[new_var] = (i, f"{orig_source}.get{getter_name}()")
+
+        # Track getter chains: user.getProfile().getSettings().getDynamicColumn()
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+                continue
+
+            # Long getter chain pattern
+            chain_pattern = r'(\w+)\s*=\s*(\w+)(?:\.get\w+\(\))+\.get(\w+)\s*\('
+            match = re.search(chain_pattern, line)
+            if match:
+                new_var = match.group(1)
+                root_var = match.group(2)
+                final_getter = match.group(3)
+                if root_var in self.db_sourced_vars:
+                    orig_line, orig_source = self.db_sourced_vars[root_var]
+                    self.db_sourced_vars[new_var] = (i, f"{orig_source}...get{final_getter}()")
+
+    def _is_db_sourced(self, line: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Check if line uses a database/entity-sourced variable."""
+        for var, (src_line, source) in self.db_sourced_vars.items():
+            if re.search(rf'\b{re.escape(var)}\b', line):
+                return True, var, source
+        return False, None, None
+
     def _is_tainted(self, line: str) -> Tuple[bool, Optional[str]]:
         """Check if a line contains tainted data."""
         for var_name in self.tainted_vars:
@@ -3802,6 +4141,13 @@ class JavaAnalyzer:
         self._check_reflection_injection()
         self._check_jni_native()
         self._check_xss()
+        # 2nd-order SQL injection detection
+        self._check_second_order_sqli()
+        self._check_criteria_api_sqli()
+        self._check_hql_function_injection()
+        self._check_table_name_injection()
+        # 2nd-order XPath injection detection
+        self._check_xpath_injection()
         return self.findings
 
     def _add_finding(self, line_num: int, vuln_name: str, category: VulnCategory,
@@ -4420,11 +4766,237 @@ class JavaAnalyzer:
                                           VulnCategory.XSS, Severity.HIGH, "HIGH", taint_var,
                                           "User input in Spring response.")
 
+    def _check_second_order_sqli(self):
+        """Detect 2nd-order SQLi with entity-sourced values in native queries."""
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+                continue
+
+            # Check for native queries with entity-sourced values
+            if re.search(r'createNativeQuery\s*\(', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db and ('+' in line or 'concat' in line.lower()):
+                    self._add_finding(
+                        i, "2nd-Order SQLi - Native query with entity value",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} concatenated into native query. "
+                        "Stored payload can execute arbitrary SQL."
+                    )
+
+            # Check HQL with entity values (createQuery)
+            if re.search(r'createQuery\s*\(', line) and not re.search(r'createNativeQuery', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db and ('+' in line or 'concat' in line.lower()):
+                    self._add_finding(
+                        i, "2nd-Order SQLi - HQL with entity value",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} in HQL query. "
+                        "Enables HQL injection and potential DB function hijacking."
+                    )
+
+            # JdbcTemplate with entity values
+            if re.search(r'jdbcTemplate\s*\.\s*(?:query|update|execute)', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db and '+' in line:
+                    self._add_finding(
+                        i, "2nd-Order SQLi - JdbcTemplate with entity value",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} in JDBC query."
+                    )
+
+    def _check_criteria_api_sqli(self):
+        """Detect 2nd-order SQLi in Hibernate Criteria API (root.get, cb.asc/desc)."""
+        criteria_sinks = [
+            (r'root\s*\.\s*get\s*\(', 'root.get()'),
+            (r'cb\s*\.\s*asc\s*\(\s*root\s*\.\s*get\s*\(', 'cb.asc(root.get())'),
+            (r'cb\s*\.\s*desc\s*\(\s*root\s*\.\s*get\s*\(', 'cb.desc(root.get())'),
+            (r'criteriaBuilder\s*\.\s*asc\s*\(', 'CriteriaBuilder.asc()'),
+            (r'criteriaBuilder\s*\.\s*desc\s*\(', 'CriteriaBuilder.desc()'),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+                continue
+
+            for pattern, sink_name in criteria_sinks:
+                if re.search(pattern, line):
+                    is_db, db_var, source = self._is_db_sourced(line)
+                    if is_db:
+                        self._add_finding(
+                            i, f"2nd-Order SQLi - Criteria API {sink_name} with entity value",
+                            VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                            f"Entity value from {source} used in {sink_name}. "
+                            "Developers assume Criteria API is safe - it's not when column names are dynamic."
+                        )
+
+    def _check_hql_function_injection(self):
+        """Detect HQL function injection - the 'Final Boss' pattern."""
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+                continue
+
+            # Check for HQL string building patterns
+            hql_patterns = [
+                (r'String\s+\w*[hH][qQ][lL]\w*\s*=', 'HQL string'),
+                (r'String\.format\s*\([^)]*FROM\s', 'String.format HQL'),
+                (r'MessageFormat\.format\s*\([^)]*FROM\s', 'MessageFormat HQL'),
+                (r'StringBuilder.*append.*FROM\s', 'StringBuilder HQL'),
+            ]
+
+            for pattern, hql_type in hql_patterns:
+                if re.search(pattern, line, re.IGNORECASE):
+                    is_db, db_var, source = self._is_db_sourced(line)
+                    if is_db:
+                        self._add_finding(
+                            i, f"2nd-Order SQLi - {hql_type} with entity value (FINAL BOSS)",
+                            VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                            f"Entity value from {source} used in HQL construction. "
+                            "Enables DB function hijacking (dbms_pipe.receive_message for Oracle, "
+                            "pg_sleep for PostgreSQL) - can exfiltrate data or cause DoS."
+                        )
+
+            # Direct createQuery with string concatenation
+            if re.search(r'createQuery\s*\(\s*["\']', line):
+                # Look at surrounding context for entity-sourced concatenation
+                context_start = max(0, i - 5)
+                context_lines = self.source_lines[context_start:i]
+                context = '\n'.join(context_lines)
+
+                is_db, db_var, source = self._is_db_sourced(context)
+                if is_db and re.search(r'createQuery\s*\([^)]*\+', line):
+                    self._add_finding(
+                        i, "2nd-Order SQLi - HQL concatenation with entity value",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} concatenated into HQL. "
+                        "Enables HQL function injection attacks."
+                    )
+
+    def _check_table_name_injection(self):
+        """Detect table name injection in native queries (multi-tenant attacks)."""
+        table_patterns = [
+            r'(?:FROM|INTO|UPDATE|JOIN)\s*"\s*\+',
+            r'DELETE\s+FROM\s*"\s*\+',
+            r'INSERT\s+INTO\s*"\s*\+',
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+                continue
+
+            for pattern in table_patterns:
+                if re.search(pattern, line, re.IGNORECASE):
+                    is_db, db_var, source = self._is_db_sourced(line)
+                    if is_db:
+                        self._add_finding(
+                            i, "2nd-Order SQLi - Table name injection",
+                            VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                            f"Table name from {source} in query. "
+                            "Multi-tenant 'Bunker Buster' attack - can access any table."
+                        )
+
+    def _check_xpath_injection(self):
+        """Detect 2nd-order XPath injection with entity-sourced values.
+
+        XPath injection is harder to detect than SQLi because:
+        1. No SQL keywords (SELECT, FROM, WHERE) to trigger regex
+        2. Structural manipulation - breaking out of XML tree logic
+        3. Blind exfiltration - character-by-character data extraction
+
+        Payloads:
+        - Breakout: "Engineering' or 1=1 or 'a'='a"
+        - Root access: "/*" or "//*"
+        - Brute force: "user[password='123']"
+        """
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+                continue
+
+            # XPath.evaluate() sink with string concatenation
+            if re.search(r'\.evaluate\s*\(.*\+', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "2nd-Order XPath Injection - evaluate() with entity value",
+                        VulnCategory.XPATH_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} used in XPath.evaluate(). "
+                        "Payload can break out of XML tree logic or enumerate nodes."
+                    )
+                elif re.search(r'\.evaluate\s*\(\s*["\'].*\+', line):
+                    # Check for any variable in concat
+                    self._add_finding(
+                        i, "XPath Injection - String concatenation in evaluate()",
+                        VulnCategory.XPATH_INJECTION, Severity.HIGH, "MEDIUM",
+                        "XPath expression built with string concatenation."
+                    )
+
+            # XPath.compile() sink with concatenation
+            if re.search(r'\.compile\s*\(.*\+', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "2nd-Order XPath Injection - compile() with entity value",
+                        VulnCategory.XPATH_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} compiled into XPath expression. "
+                        "Attacker can control XML node selection."
+                    )
+
+            # String.format XPath pattern
+            if re.search(r'String\.format\s*\(\s*["\'][^"\']*//[^"\']*%s', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "2nd-Order XPath Injection - String.format XPath",
+                        VulnCategory.XPATH_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} formatted into XPath. "
+                        "String.format doesn't escape XPath special characters."
+                    )
+
+            # MessageFormat XPath pattern
+            if re.search(r'MessageFormat\.format\s*\(.*//.*\{0\}', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "2nd-Order XPath Injection - MessageFormat XPath",
+                        VulnCategory.XPATH_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} in MessageFormat XPath."
+                    )
+
+            # StringBuilder with XPath patterns
+            if re.search(r'\.append\s*\(.*[@\[\]/].*\+', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db and re.search(r'//|@\w+|/\w+\[', line):
+                    self._add_finding(
+                        i, "2nd-Order XPath Injection - StringBuilder XPath",
+                        VulnCategory.XPATH_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} appended to XPath query."
+                    )
+
+            # Direct entity getter in XPath context
+            if re.search(r'\.evaluate\s*\(.*\.get\w+\s*\(\s*\)', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "2nd-Order XPath Injection - Direct getter in evaluate()",
+                        VulnCategory.XPATH_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity getter from {source} used directly in XPath.evaluate()."
+                    )
+
 
 class PHPAnalyzer:
     """
     PHP analyzer with taint tracking for common web vulnerabilities.
     Tracks $_GET, $_POST, $_REQUEST, $_COOKIE, $_SERVER as taint sources.
+    Includes 2nd-order SQLi detection for:
+    - Database-sourced values (fetch_assoc, fetch_object, etc.)
+    - JSON-decoded values (json_decode loses taint in most scanners)
+    - Unserialized objects (the "Double-Unserialize" pattern)
+    - Table name injection (multi-tenant attacks)
+    - Calculation sinks (SUM, COUNT, AVG, etc.)
     """
 
     def __init__(self, source_code: str, file_path: str):
@@ -4433,9 +5005,18 @@ class PHPAnalyzer:
         self.file_path = file_path
         self.findings: List[Finding] = []
         self.tainted_vars: Dict[str, int] = {}
+        # 2nd-order tracking
+        self.db_sourced_vars: Dict[str, Tuple[int, str]] = {}  # var -> (line, source)
+        self.json_decoded_vars: Dict[str, Tuple[int, str]] = {}  # var -> (line, source)
+        self.unserialized_vars: Dict[str, Tuple[int, str]] = {}  # var -> (line, source)
+        self.table_name_vars: Dict[str, Tuple[int, str]] = {}  # var -> (line, source)
 
         self._identify_taint_sources()
         self._track_variable_assignments()
+        self._track_database_sources()
+        self._track_json_decoded()
+        self._track_unserialized()
+        self._track_table_names()
 
     def _identify_taint_sources(self):
         """Identify PHP superglobals and function parameters as taint sources."""
@@ -4476,6 +5057,185 @@ class PHPAnalyzer:
                         self.tainted_vars[var_name] = i
                         break
 
+    def _track_database_sources(self):
+        """Track variables that receive values from database queries (2nd-order sources)."""
+        db_patterns = [
+            (r'\$(\w+)\s*=\s*.*->fetch_assoc\s*\(', 'fetch_assoc'),
+            (r'\$(\w+)\s*=\s*.*->fetch_object\s*\(', 'fetch_object'),
+            (r'\$(\w+)\s*=\s*.*->fetch_row\s*\(', 'fetch_row'),
+            (r'\$(\w+)\s*=\s*.*->fetch_array\s*\(', 'fetch_array'),
+            (r'\$(\w+)\s*=\s*.*->fetch\s*\(', 'PDO::fetch'),
+            (r'\$(\w+)\s*=\s*.*->fetchAll\s*\(', 'PDO::fetchAll'),
+            (r'\$(\w+)\s*=\s*.*->fetch_column\s*\(', 'fetch_column'),
+            (r'\$(\w+)\s*=\s*mysqli_fetch_assoc\s*\(', 'mysqli_fetch_assoc'),
+            (r'\$(\w+)\s*=\s*mysqli_fetch_object\s*\(', 'mysqli_fetch_object'),
+            (r'\$(\w+)\s*=\s*pg_fetch_assoc\s*\(', 'pg_fetch_assoc'),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//') or line.strip().startswith('#'):
+                continue
+            for pattern, source_type in db_patterns:
+                match = re.search(pattern, line)
+                if match:
+                    var_name = match.group(1)
+                    self.db_sourced_vars[var_name] = (i, source_type)
+
+        # Track array access on DB-sourced rows: $col = $row['column']
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//') or line.strip().startswith('#'):
+                continue
+            for db_var in list(self.db_sourced_vars.keys()):
+                pattern = rf'\$(\w+)\s*=\s*\${re.escape(db_var)}\s*\[\s*[\'"](\w+)[\'"]\s*\]'
+                match = re.search(pattern, line)
+                if match:
+                    new_var = match.group(1)
+                    col_name = match.group(2)
+                    orig_line, orig_source = self.db_sourced_vars[db_var]
+                    self.db_sourced_vars[new_var] = (i, f"{orig_source}['{col_name}']")
+
+                # Object access: $col = $row->column
+                obj_pattern = rf'\$(\w+)\s*=\s*\${re.escape(db_var)}->(\w+)'
+                match = re.search(obj_pattern, line)
+                if match:
+                    new_var = match.group(1)
+                    prop_name = match.group(2)
+                    orig_line, orig_source = self.db_sourced_vars[db_var]
+                    self.db_sourced_vars[new_var] = (i, f"{orig_source}->{prop_name}")
+
+    def _track_json_decoded(self):
+        """Track variables through json_decode() - most scanners lose taint here."""
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//') or line.strip().startswith('#'):
+                continue
+
+            # $config = json_decode($row['config'], true)
+            match = re.search(r'\$(\w+)\s*=\s*json_decode\s*\(', line)
+            if match:
+                var_name = match.group(1)
+                # Check if the source is from DB
+                for db_var in self.db_sourced_vars:
+                    if re.search(rf'\${re.escape(db_var)}', line):
+                        orig_line, orig_source = self.db_sourced_vars[db_var]
+                        self.json_decoded_vars[var_name] = (i, f"json_decode({orig_source})")
+                        break
+                else:
+                    # Generic json_decode from any source
+                    self.json_decoded_vars[var_name] = (i, "json_decode")
+
+        # Track array access on JSON-decoded data: $val = $config['key']
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//') or line.strip().startswith('#'):
+                continue
+            for json_var in list(self.json_decoded_vars.keys()):
+                # $val = $config['key'] or $val = $config['outer']['inner']
+                pattern = rf'\$(\w+)\s*=\s*\${re.escape(json_var)}\s*\[[\'"](\w+)[\'"]\]'
+                match = re.search(pattern, line)
+                if match:
+                    new_var = match.group(1)
+                    key_name = match.group(2)
+                    orig_line, orig_source = self.json_decoded_vars[json_var]
+                    self.json_decoded_vars[new_var] = (i, f"{orig_source}['{key_name}']")
+
+    def _track_unserialized(self):
+        """Track variables through unserialize() - the 'Double-Unserialize' pattern."""
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//') or line.strip().startswith('#'):
+                continue
+
+            # $prefs = unserialize($data) - where $data came from DB
+            match = re.search(r'\$(\w+)\s*=\s*unserialize\s*\(', line)
+            if match:
+                var_name = match.group(1)
+                # Check if the source is from DB
+                for db_var in self.db_sourced_vars:
+                    if re.search(rf'\${re.escape(db_var)}', line):
+                        orig_line, orig_source = self.db_sourced_vars[db_var]
+                        self.unserialized_vars[var_name] = (i, f"unserialize({orig_source})")
+                        break
+                else:
+                    # Generic unserialize
+                    self.unserialized_vars[var_name] = (i, "unserialize")
+
+        # Track property access on unserialized objects: $val = $prefs->theme
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//') or line.strip().startswith('#'):
+                continue
+            for unser_var in list(self.unserialized_vars.keys()):
+                # Object property: $prefs->property
+                prop_pattern = rf'\$(\w+)\s*=\s*\${re.escape(unser_var)}->(\w+)'
+                match = re.search(prop_pattern, line)
+                if match:
+                    new_var = match.group(1)
+                    prop_name = match.group(2)
+                    orig_line, orig_source = self.unserialized_vars[unser_var]
+                    self.unserialized_vars[new_var] = (i, f"{orig_source}->{prop_name}")
+
+                # Array access: $prefs['key']
+                arr_pattern = rf'\$(\w+)\s*=\s*\${re.escape(unser_var)}\s*\[[\'"](\w+)[\'"]\]'
+                match = re.search(arr_pattern, line)
+                if match:
+                    new_var = match.group(1)
+                    key_name = match.group(2)
+                    orig_line, orig_source = self.unserialized_vars[unser_var]
+                    self.unserialized_vars[new_var] = (i, f"{orig_source}['{key_name}']")
+
+    def _track_table_names(self):
+        """Track variables that likely contain table names from config/DB."""
+        table_patterns = [
+            r'\$(\w*table\w*)\s*=',
+            r'\$(\w*tbl\w*)\s*=',
+            r'\$(\w*entity\w*)\s*=',
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//') or line.strip().startswith('#'):
+                continue
+
+            for pattern in table_patterns:
+                match = re.search(pattern, line, re.IGNORECASE)
+                if match:
+                    var_name = match.group(1)
+                    # Check if it comes from DB or JSON
+                    for db_var in self.db_sourced_vars:
+                        if re.search(rf'\${re.escape(db_var)}', line):
+                            orig_line, source = self.db_sourced_vars[db_var]
+                            self.table_name_vars[var_name] = (i, f"db:{source}")
+                            break
+                    for json_var in self.json_decoded_vars:
+                        if re.search(rf'\${re.escape(json_var)}', line):
+                            orig_line, source = self.json_decoded_vars[json_var]
+                            self.table_name_vars[var_name] = (i, f"json:{source}")
+                            break
+
+    def _is_db_sourced(self, line: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Check if line uses a database-sourced variable."""
+        for var, (src_line, source) in self.db_sourced_vars.items():
+            if re.search(rf'\${re.escape(var)}\b', line):
+                return True, var, source
+        return False, None, None
+
+    def _is_json_poisoned(self, line: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Check if line uses a JSON-decoded variable (potential poisoning)."""
+        for var, (src_line, source) in self.json_decoded_vars.items():
+            if re.search(rf'\${re.escape(var)}\b', line):
+                return True, var, source
+        return False, None, None
+
+    def _is_table_name_var(self, line: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Check if line uses a tracked table name variable."""
+        for var, (src_line, source) in self.table_name_vars.items():
+            if re.search(rf'\${re.escape(var)}\b', line):
+                return True, var, source
+        return False, None, None
+
+    def _is_unserialized(self, line: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Check if line uses an unserialized variable (Double-Unserialize pattern)."""
+        for var, (src_line, source) in self.unserialized_vars.items():
+            if re.search(rf'\${re.escape(var)}\b', line):
+                return True, var, source
+        return False, None, None
+
     def _is_tainted(self, line: str) -> Tuple[bool, Optional[str]]:
         for var in self.tainted_vars:
             if re.search(rf'\${re.escape(var)}\b', line):
@@ -4500,6 +5260,14 @@ class PHPAnalyzer:
         self._check_ssrf()
         self._check_path_traversal()
         self._check_xss()
+        # 2nd-order SQL injection detection
+        self._check_second_order_sqli()
+        self._check_json_poisoning_sqli()
+        self._check_table_name_injection()
+        self._check_structural_calc_sqli()
+        self._check_unserialize_sqli()
+        # 2nd-order XPath injection detection
+        self._check_xpath_injection()
         return self.findings
 
     def _add_finding(self, line_num: int, vuln_name: str, category: VulnCategory,
@@ -4940,10 +5708,263 @@ class PHPAnalyzer:
                                       VulnCategory.XSS, Severity.HIGH, "HIGH",
                                       description="Dynamic content in HTML attribute context.")
 
+    def _check_second_order_sqli(self):
+        """Detect 2nd-order SQLi with database-sourced values in UPDATE/DELETE."""
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//') or line.strip().startswith('#'):
+                continue
+
+            # Check for UPDATE/DELETE with db-sourced values
+            if re.search(r'(?:UPDATE|DELETE)\s+', line, re.IGNORECASE):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "2nd-Order SQLi - UPDATE/DELETE with DB-sourced value",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Value from {source} used in destructive query. "
+                        "Stored payload can modify/delete data."
+                    )
+
+    def _check_json_poisoning_sqli(self):
+        """Detect SQLi through JSON-decoded values (taint lost through json_decode)."""
+        calc_patterns = [
+            (r'SUM\s*\(\s*\$', 'SUM'),
+            (r'COUNT\s*\(\s*\$', 'COUNT'),
+            (r'AVG\s*\(\s*\$', 'AVG'),
+            (r'MIN\s*\(\s*\$', 'MIN'),
+            (r'MAX\s*\(\s*\$', 'MAX'),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//') or line.strip().startswith('#'):
+                continue
+
+            # Check for calculation functions with JSON-poisoned values
+            for pattern, func_name in calc_patterns:
+                if re.search(pattern, line, re.IGNORECASE):
+                    is_json, json_var, source = self._is_json_poisoned(line)
+                    if is_json:
+                        self._add_finding(
+                            i, f"2nd-Order SQLi - {func_name}() with JSON-decoded value",
+                            VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", json_var,
+                            f"JSON-decoded value from {source} used in {func_name}(). "
+                            "Most scanners miss this - taint lost through json_decode()."
+                        )
+
+            # Check ORDER BY / GROUP BY with JSON values
+            if re.search(r'ORDER\s+BY\s+\$|GROUP\s+BY\s+\$', line, re.IGNORECASE):
+                is_json, json_var, source = self._is_json_poisoned(line)
+                if is_json:
+                    self._add_finding(
+                        i, "2nd-Order SQLi - ORDER/GROUP BY with JSON-decoded value",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", json_var,
+                        f"JSON-decoded value from {source} used in structural clause. "
+                        "Enables boolean-based data exfiltration."
+                    )
+
+    def _check_table_name_injection(self):
+        """Detect table name injection (multi-tenant attacks)."""
+        table_patterns = [
+            r'(?:FROM|INTO|UPDATE|JOIN)\s+\$',
+            r'DELETE\s+FROM\s+\$',
+            r'INSERT\s+INTO\s+\$',
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//') or line.strip().startswith('#'):
+                continue
+
+            for pattern in table_patterns:
+                if re.search(pattern, line, re.IGNORECASE):
+                    # Check if it's a table name variable
+                    is_tbl, tbl_var, source = self._is_table_name_var(line)
+                    if is_tbl:
+                        self._add_finding(
+                            i, "2nd-Order SQLi - Table name injection",
+                            VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", tbl_var,
+                            f"Table name from {source} used in query. "
+                            "Multi-tenant 'Bunker Buster' attack - can access other tenants' data."
+                        )
+                    else:
+                        # Check if it's from DB or JSON
+                        is_db, db_var, db_source = self._is_db_sourced(line)
+                        is_json, json_var, json_source = self._is_json_poisoned(line)
+                        if is_db:
+                            self._add_finding(
+                                i, "2nd-Order SQLi - Table name from database",
+                                VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                                f"Table name from {db_source}. Stored payload can access/modify any table."
+                            )
+                        elif is_json:
+                            self._add_finding(
+                                i, "2nd-Order SQLi - Table name from JSON config",
+                                VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", json_var,
+                                f"Table name from {json_source}. JSON poisoning enables table injection."
+                            )
+
+    def _check_structural_calc_sqli(self):
+        """Detect 2nd-order SQLi in calculation and structural SQL sinks."""
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//') or line.strip().startswith('#'):
+                continue
+
+            # Check for direct DB-sourced values in SQL calculation context
+            if re.search(r'(?:SUM|COUNT|AVG|MIN|MAX)\s*\(', line, re.IGNORECASE):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "2nd-Order SQLi - Calculation with DB-sourced column",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"DB value from {source} used as column in aggregate function."
+                    )
+
+            # ORDER BY / GROUP BY with DB values
+            if re.search(r'ORDER\s+BY\s+\$|GROUP\s+BY\s+\$', line, re.IGNORECASE):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "2nd-Order SQLi - Structural clause with DB-sourced value",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"DB value from {source} in ORDER/GROUP BY. Boolean-based exfiltration possible."
+                    )
+
+    def _check_unserialize_sqli(self):
+        """Detect 2nd-order SQLi via unserialized object properties (Double-Unserialize pattern).
+
+        Pattern: Serialized payload stored in DB -> unserialize() -> property used in SQL
+        Example: $prefs = unserialize($row['data']); $db->query("... " . $prefs->theme);
+        """
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//') or line.strip().startswith('#'):
+                continue
+
+            # Skip safe parameterized queries
+            if re.search(r'(?:prepare|bindParam|bindValue|execute\s*\(\s*\[)', line, re.IGNORECASE):
+                continue
+
+            # Check for SQL sinks with unserialized values
+            sql_patterns = [
+                r'(?:mysql_query|mysqli_query|pg_query|sqlite_query)\s*\(',
+                r'\$\w+->query\s*\(',
+                r'\$\w+->exec\s*\(',
+                r'->(?:raw|select|where|whereRaw|selectRaw)\s*\(',
+                r'(?:DB|Database)::(?:query|select|raw|statement)\s*\(',
+            ]
+
+            for sql_pat in sql_patterns:
+                if re.search(sql_pat, line, re.IGNORECASE):
+                    is_unser, var_name, source = self._is_unserialized(line)
+                    if is_unser:
+                        self._add_finding(
+                            i, "2nd-Order SQLi - Unserialized object property in SQL (Double-Unserialize)",
+                            VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", var_name,
+                            f"Unserialized object from {source} used in SQL. Payload chain: DB -> unserialize -> property -> SQL sink."
+                        )
+                        break
+
+            # Check string concat into SQL patterns
+            if re.search(r'["\'](?:SELECT|INSERT|UPDATE|DELETE|FROM|WHERE).*\.\s*\$', line, re.IGNORECASE):
+                is_unser, var_name, source = self._is_unserialized(line)
+                if is_unser:
+                    self._add_finding(
+                        i, "2nd-Order SQLi - Unserialized object in SQL concat (Double-Unserialize)",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", var_name,
+                        f"Unserialized value from {source} concatenated into SQL string."
+                    )
+
+            # sprintf SQL patterns
+            if re.search(r'sprintf\s*\(\s*["\'](?:SELECT|INSERT|UPDATE|DELETE)', line, re.IGNORECASE):
+                is_unser, var_name, source = self._is_unserialized(line)
+                if is_unser:
+                    self._add_finding(
+                        i, "2nd-Order SQLi - Unserialized value in sprintf SQL (Double-Unserialize)",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", var_name,
+                        f"Unserialized value from {source} formatted into SQL via sprintf."
+                    )
+
+    def _check_xpath_injection(self):
+        """Detect 2nd-order XPath injection in PHP.
+
+        PHP XPath Sinks:
+        - DOMXPath->query($expr)
+        - DOMXPath->evaluate($expr)
+        - SimpleXMLElement->xpath($expr)
+
+        Attack Payloads:
+        - Breakout: "' or 1=1 or 'a'='a"
+        - Enumerate: "//user" or "/*"
+        """
+        xpath_sinks = [
+            r'\$\w+->query\s*\(',          # DOMXPath->query()
+            r'\$\w+->evaluate\s*\(',        # DOMXPath->evaluate()
+            r'\$\w+->xpath\s*\(',           # SimpleXMLElement->xpath()
+            r'simplexml_load_.*->xpath\s*\(',
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//') or line.strip().startswith('#'):
+                continue
+
+            for sink_pattern in xpath_sinks:
+                if re.search(sink_pattern, line, re.IGNORECASE):
+                    # Check for direct tainted input
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted:
+                        self._add_finding(
+                            i, "XPath Injection - Query with tainted data",
+                            VulnCategory.XPATH_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                            "User input in XPath query. Payload can enumerate nodes or break out."
+                        )
+                        break
+
+                    # 2nd-order: DB-sourced values
+                    is_db, db_var, source = self._is_db_sourced(line)
+                    if is_db:
+                        self._add_finding(
+                            i, "2nd-Order XPath Injection - DB-sourced value in query",
+                            VulnCategory.XPATH_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                            f"DB value from {source} used in XPath. Stored payload can enumerate nodes."
+                        )
+                        break
+
+                    # 2nd-order: JSON-decoded values
+                    is_json, json_var, json_source = self._is_json_poisoned(line)
+                    if is_json:
+                        self._add_finding(
+                            i, "2nd-Order XPath Injection - JSON-decoded value in query",
+                            VulnCategory.XPATH_INJECTION, Severity.CRITICAL, "HIGH", json_var,
+                            f"JSON value from {json_source} used in XPath. Poisoned JSON payload."
+                        )
+                        break
+
+                    # 2nd-order: Unserialized values
+                    is_unser, unser_var, unser_source = self._is_unserialized(line)
+                    if is_unser:
+                        self._add_finding(
+                            i, "2nd-Order XPath Injection - Unserialized value in query",
+                            VulnCategory.XPATH_INJECTION, Severity.CRITICAL, "HIGH", unser_var,
+                            f"Unserialized value from {unser_source} used in XPath. Double-unserialize attack."
+                        )
+                        break
+
+            # Check for string concatenation XPath patterns
+            if re.search(r'xpath\s*\(\s*["\']//.*\.\s*\$', line, re.IGNORECASE):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "2nd-Order XPath Injection - Concatenation with DB value",
+                        VulnCategory.XPATH_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"DB value from {source} concatenated into XPath expression."
+                    )
+
 
 class CSharpAnalyzer:
     """
     C# analyzer with taint tracking for ASP.NET and general C# vulnerabilities.
+    Includes 2nd-order SQLi detection for:
+    - Entity Framework FromSqlRaw/ExecuteSqlRaw with entity values
+    - Auto-mapper mass assignment patterns
+    - Dynamic UPDATE/INSERT with entity property access
     """
 
     def __init__(self, source_code: str, file_path: str):
@@ -4954,10 +5975,13 @@ class CSharpAnalyzer:
         self.tainted_vars: Dict[str, int] = {}
         self.tainted_fields: Dict[str, int] = {}  # Track tainted class fields
         self.constructor_params: Dict[str, int] = {}  # Track constructor parameters
+        # 2nd-order tracking
+        self.db_sourced_vars: Dict[str, Tuple[int, str]] = {}  # var -> (line, source)
 
         self._identify_taint_sources()
         self._track_variable_assignments()
         self._track_field_assignments()
+        self._track_database_sources()
 
     def _identify_taint_sources(self):
         """Identify ASP.NET request objects and method parameters as taint sources."""
@@ -5065,6 +6089,53 @@ class CSharpAnalyzer:
                 elif re.search(r'~\w+\s*\(\s*\)', line):
                     in_constructor = False
 
+    def _track_database_sources(self):
+        """Track variables that receive values from Entity Framework/DB queries."""
+        # EF Core / Entity Framework patterns
+        ef_patterns = [
+            (r'(\w+)\s*=\s*(?:db|context|_context|_db)\.(\w+)\.Find\s*\(', 'DbContext.Find'),
+            (r'(\w+)\s*=\s*(?:db|context|_context|_db)\.(\w+)\.FirstOrDefault\s*\(', 'DbContext.FirstOrDefault'),
+            (r'(\w+)\s*=\s*(?:db|context|_context|_db)\.(\w+)\.SingleOrDefault\s*\(', 'DbContext.SingleOrDefault'),
+            (r'(\w+)\s*=\s*(?:db|context|_context|_db)\.(\w+)\.First\s*\(', 'DbContext.First'),
+            (r'(\w+)\s*=\s*await\s+(?:db|context|_context|_db)\.(\w+)\.FindAsync\s*\(', 'DbContext.FindAsync'),
+            (r'(\w+)\s*=\s*await\s+(?:db|context|_context|_db)\.(\w+)\.FirstOrDefaultAsync\s*\(', 'DbContext.FirstOrDefaultAsync'),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//'):
+                continue
+
+            for pattern, source_type in ef_patterns:
+                match = re.search(pattern, line)
+                if match:
+                    var_name = match.group(1)
+                    table_name = match.group(2)
+                    self.db_sourced_vars[var_name] = (i, f"{source_type}({table_name})")
+
+        # Track property access on entity objects: var prop = entity.PropertyName
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//'):
+                continue
+
+            for entity_var in list(self.db_sourced_vars.keys()):
+                # Pattern: entity.Property (C# property access)
+                prop_pattern = rf'{re.escape(entity_var)}\.(\w+)'
+                for match in re.finditer(prop_pattern, line):
+                    prop_name = match.group(1)
+                    # Skip common method calls
+                    if prop_name not in ['Find', 'FirstOrDefault', 'Where', 'Select', 'ToString']:
+                        orig_line, orig_source = self.db_sourced_vars[entity_var]
+                        # Track the property access pattern for inline detection
+                        prop_key = f"{entity_var}.{prop_name}"
+                        self.db_sourced_vars[prop_key] = (i, f"{orig_source}.{prop_name}")
+
+    def _is_db_sourced(self, line: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Check if line uses a database/entity-sourced variable or property."""
+        for var, (src_line, source) in self.db_sourced_vars.items():
+            if re.search(rf'\b{re.escape(var)}\b', line):
+                return True, var, source
+        return False, None, None
+
     def _is_tainted(self, line: str) -> Tuple[bool, Optional[str]]:
         for var in self.tainted_vars:
             if re.search(rf'\b{re.escape(var)}\b', line):
@@ -5095,6 +6166,8 @@ class CSharpAnalyzer:
         self._check_ssti()
         self._check_viewstate_vulnerabilities()
         self._check_xss()
+        # 2nd-order SQL injection detection
+        self._check_second_order_sqli()
         return self.findings
 
     def _add_finding(self, line_num: int, vuln_name: str, category: VulnCategory,
@@ -5665,6 +6738,31 @@ class CSharpAnalyzer:
                                                   "XPath query built with string concatenation containing user input.")
                                 break
 
+            # 2nd-Order XPath injection: Entity-sourced values
+            for sink in xpath_sinks:
+                if re.search(sink, line):
+                    is_db, db_var, source = self._is_db_sourced(line)
+                    if is_db:
+                        self._add_finding(
+                            i, "2nd-Order XPath Injection - Entity value in XPath",
+                            VulnCategory.XPATH_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                            f"Entity value from {source} used in XPath query. "
+                            "Payload can enumerate nodes or break out of XML tree logic."
+                        )
+                        break
+
+                    # Check context for entity-sourced values
+                    context = '\n'.join(self.source_lines[max(0, i-5):i+1])
+                    is_db, db_var, source = self._is_db_sourced(context)
+                    if is_db and ('+' in context or '$"' in context):
+                        self._add_finding(
+                            i, "2nd-Order XPath Injection - Entity value concatenated",
+                            VulnCategory.XPATH_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                            f"Entity value from {source} concatenated into XPath. "
+                            "2nd-order injection via database-sourced value."
+                        )
+                        break
+
     def _check_ssrf(self):
         """Detect Server-Side Request Forgery vulnerabilities."""
         http_sinks = [
@@ -5864,6 +6962,54 @@ class CSharpAnalyzer:
                     self._add_finding(i, "XSS - Response.Write with tainted data",
                                       VulnCategory.XSS, Severity.CRITICAL, "HIGH", taint_var,
                                       "Unencoded user input in Response.Write().")
+
+    def _check_second_order_sqli(self):
+        """Detect 2nd-order SQLi with Entity Framework entity-sourced values."""
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('//'):
+                continue
+
+            # FromSqlRaw / FromSqlInterpolated with entity values (The "Auto-Mapper" pattern)
+            if re.search(r'FromSqlRaw\s*\(\s*\$', line) or re.search(r'FromSqlInterpolated\s*\(', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "2nd-Order SQLi - FromSqlRaw with entity value (Auto-Mapper pattern)",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity property from {source} in FromSqlRaw. "
+                        "Structural Hijack - payload can break out and set other columns (e.g., IsAdmin = true)."
+                    )
+
+            # ExecuteSqlRaw / ExecuteSqlRawAsync with entity values
+            if re.search(r'ExecuteSqlRaw(?:Async)?\s*\(', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "2nd-Order SQLi - ExecuteSqlRaw with entity value",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity property from {source} in ExecuteSqlRaw. Stored payload executes."
+                    )
+
+            # Dynamic SQL building with entity properties
+            if re.search(r'(?:UPDATE|DELETE|INSERT)\s', line, re.IGNORECASE):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db and ('$"' in line or '$@"' in line or re.search(r'\+\s*\w+\.', line)):
+                    self._add_finding(
+                        i, "2nd-Order SQLi - Dynamic SQL with entity property",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity property from {source} in dynamic SQL. "
+                        "Mass assignment via 2nd-order injection."
+                    )
+
+            # SqlCommand / SqlQuery with entity values
+            if re.search(r'new\s+SqlCommand\s*\(|\.SqlQuery\s*\(', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db and ('$"' in line or '+' in line):
+                    self._add_finding(
+                        i, "2nd-Order SQLi - SqlCommand with entity value",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity property from {source} in SqlCommand."
+                    )
 
 
 class ASPNetConfigAnalyzer:
@@ -6389,6 +7535,10 @@ class GoAnalyzer:
 class RubyAnalyzer:
     """
     Ruby analyzer with taint tracking for Rails and general Ruby vulnerabilities.
+    Includes 2nd-order SQLi detection for:
+    - Structural sinks: order(), reorder(), group()
+    - Calculation sinks: sum(), count(), average(), minimum(), maximum()
+    - Destructive sinks: delete_all(), destroy_all()
     """
 
     def __init__(self, source_code: str, file_path: str):
@@ -6397,9 +7547,11 @@ class RubyAnalyzer:
         self.file_path = file_path
         self.findings: List[Finding] = []
         self.tainted_vars: Dict[str, int] = {}
+        self.db_sourced_vars: Dict[str, Tuple[int, str]] = {}  # var -> (line, source_model)
 
         self._identify_taint_sources()
         self._track_variable_assignments()
+        self._track_database_sources()
 
     def _identify_taint_sources(self):
         """Identify Rails params, request data, and method parameters."""
@@ -6438,6 +7590,59 @@ class RubyAnalyzer:
                         self.tainted_vars[var_name] = i
                         break
 
+    def _track_database_sources(self):
+        """Track variables that get values from database (entity-sourced for 2nd-order SQLi)."""
+        # ActiveRecord patterns that fetch from DB
+        db_patterns = [
+            (r'(\w+)\s*=\s*(\w+)\.find\s*\(', 'find'),
+            (r'(\w+)\s*=\s*(\w+)\.find_by\s*\(', 'find_by'),
+            (r'(\w+)\s*=\s*(\w+)\.first\b', 'first'),
+            (r'(\w+)\s*=\s*(\w+)\.last\b', 'last'),
+            (r'(\w+)\s*=\s*(\w+)\.where\s*\(.*\)\.first', 'where.first'),
+            (r'(\w+)\s*=\s*(\w+)\.find_or_create_by\s*\(', 'find_or_create'),
+            (r'(\w+)\s*=\s*(\w+)\.find_or_initialize_by\s*\(', 'find_or_init'),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('#'):
+                continue
+            for pattern, source_type in db_patterns:
+                match = re.search(pattern, line)
+                if match:
+                    var_name = match.group(1)
+                    model_name = match.group(2)
+                    self.db_sourced_vars[var_name] = (i, f"{model_name}.{source_type}")
+
+        # Track attribute access on DB-sourced objects
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('#'):
+                continue
+            for db_var in list(self.db_sourced_vars.keys()):
+                # var = entity.attribute or var = entity[:attr]
+                attr_pattern = rf'(\w+)\s*=\s*{re.escape(db_var)}\.(\w+)'
+                match = re.search(attr_pattern, line)
+                if match:
+                    new_var = match.group(1)
+                    attr_name = match.group(2)
+                    orig_line, orig_source = self.db_sourced_vars[db_var]
+                    self.db_sourced_vars[new_var] = (i, f"{orig_source}.{attr_name}")
+
+                # Hash-style access: var = entity[:column]
+                hash_pattern = rf'(\w+)\s*=\s*{re.escape(db_var)}\s*\[\s*[:\'\"](\w+)'
+                match = re.search(hash_pattern, line)
+                if match:
+                    new_var = match.group(1)
+                    attr_name = match.group(2)
+                    orig_line, orig_source = self.db_sourced_vars[db_var]
+                    self.db_sourced_vars[new_var] = (i, f"{orig_source}[{attr_name}]")
+
+    def _is_db_sourced(self, line: str) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Check if line uses a database-sourced variable."""
+        for var, (src_line, source) in self.db_sourced_vars.items():
+            if re.search(rf'\b{re.escape(var)}\b', line):
+                return True, var, source
+        return False, None, None
+
     def _is_tainted(self, line: str) -> Tuple[bool, Optional[str]]:
         for var in self.tainted_vars:
             if re.search(rf'\b{re.escape(var)}\b', line):
@@ -6460,6 +7665,10 @@ class RubyAnalyzer:
         self._check_ssrf()
         self._check_ssti()
         self._check_xss()
+        # 2nd-order SQL injection detection
+        self._check_structural_sqli()
+        self._check_calculation_sqli()
+        self._check_destructive_sqli()
         return self.findings
 
     def _add_finding(self, line_num: int, vuln_name: str, category: VulnCategory,
@@ -6717,6 +7926,88 @@ class RubyAnalyzer:
                                       VulnCategory.SSTI, Severity.CRITICAL, "HIGH", taint_var,
                                       "User input in ERB template.")
 
+    def _check_structural_sqli(self):
+        """Detect 2nd-order SQLi in structural sinks: order(), reorder(), group()."""
+        structural_patterns = [
+            (r'\.order\s*\(', 'order'),
+            (r'\.reorder\s*\(', 'reorder'),
+            (r'\.group\s*\(', 'group'),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('#'):
+                continue
+
+            for pattern, sink_type in structural_patterns:
+                if re.search(pattern, line):
+                    is_db, db_var, source = self._is_db_sourced(line)
+                    if is_db:
+                        self._add_finding(
+                            i, f"2nd-Order SQLi - {sink_type}() with DB-sourced value",
+                            VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                            f"Entity value from {source} used in {sink_type}(). "
+                            "Enables ORDER BY injection for boolean-based data exfiltration."
+                        )
+
+    def _check_calculation_sqli(self):
+        """Detect 2nd-order SQLi in calculation sinks: sum(), count(), average(), etc."""
+        calc_patterns = [
+            (r'\.sum\s*\(', 'sum'),
+            (r'\.count\s*\(', 'count'),
+            (r'\.average\s*\(', 'average'),
+            (r'\.minimum\s*\(', 'minimum'),
+            (r'\.maximum\s*\(', 'maximum'),
+            (r'\.calculate\s*\(', 'calculate'),
+            (r'\.pluck\s*\(', 'pluck'),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('#'):
+                continue
+
+            for pattern, sink_type in calc_patterns:
+                if re.search(pattern, line):
+                    is_db, db_var, source = self._is_db_sourced(line)
+                    if is_db:
+                        self._add_finding(
+                            i, f"2nd-Order SQLi - {sink_type}() with DB-sourced column",
+                            VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                            f"Entity value from {source} used as column in {sink_type}(). "
+                            "Allows arbitrary SQL fragment injection via column name."
+                        )
+
+    def _check_destructive_sqli(self):
+        """Detect 2nd-order SQLi in destructive sinks: delete_all(), destroy_all(), update_all()."""
+        destructive_patterns = [
+            (r'\.delete_all\s*\(', 'delete_all'),
+            (r'\.destroy_all\s*\(', 'destroy_all'),
+            (r'\.update_all\s*\(', 'update_all'),
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            if line.strip().startswith('#'):
+                continue
+
+            for pattern, sink_type in destructive_patterns:
+                if re.search(pattern, line):
+                    is_db, db_var, source = self._is_db_sourced(line)
+                    if is_db:
+                        self._add_finding(
+                            i, f"2nd-Order SQLi - {sink_type}() with DB-sourced condition",
+                            VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                            f"Entity value from {source} used in {sink_type}(). "
+                            "Payload like '1 OR 1=1' can wipe entire table."
+                        )
+
+                    # Also check for string interpolation with any variable
+                    if '#{' in line:
+                        self._add_finding(
+                            i, f"SQLi - {sink_type}() with string interpolation",
+                            VulnCategory.SQL_INJECTION, Severity.HIGH, "MEDIUM",
+                            description=f"String interpolation in {sink_type}() condition. "
+                            "Use parameterized queries or sanitize input."
+                        )
+
 
 class ASTScanner:
     """Main scanner class that orchestrates AST-based analysis."""
@@ -6872,6 +8163,10 @@ class ASTScanner:
         tracker = PythonTaintTracker(source_code, file_path)
         tracker.visit(tree)
         tracker._check_evasion_patterns()  # Run evasion detection after AST visit
+
+        # 2nd-order detection for pandas df.query()/eval() with DB-sourced values
+        tracker._track_database_sources()
+        tracker._check_pandas_query_injection()
 
         return self._filter_findings(tracker.findings)
 
