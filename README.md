@@ -276,6 +276,7 @@ db.Products.FromSqlRaw(
 - **Cross-Function Analysis** - Follows data through methods
 - **Evasion Detection** - Catches obfuscation tricks
 - **Confidence Scoring** - HIGH/MEDIUM/LOW ratings
+- **Minified File Detection** - Warns about potential false positives
 
 </td>
 <td width="50%">
@@ -289,6 +290,8 @@ db.Products.FromSqlRaw(
 - SSRF & SSTI
 - Insecure Deserialization
 - Path Traversal
+- React XSS (Level 1-5)
+- Prototype Pollution RCE
 
 </td>
 </tr>
@@ -539,6 +542,28 @@ FILE: models/UserPrefs.php
      Payload chain: DB -> unserialize -> property -> SQL sink.
 ================================================================================
 ```
+
+### Minified File Warning
+
+When the scanner detects a minified JavaScript file, it displays a prominent warning:
+
+```
+  ╔══════════════════════════════════════════════════════════════════════════════╗
+  ║  ⚠️  MINIFIED FILE DETECTED                                                   ║
+  ║  File: loader.min.js                                                         ║
+  ║                                                                              ║
+  ║  WARNING: Minified files may produce MORE FALSE POSITIVES.                  ║
+  ║  Findings from this file should be reviewed carefully.                      ║
+  ╚══════════════════════════════════════════════════════════════════════════════╝
+```
+
+**Detection heuristics:**
+- Very few lines with large file size
+- Average line length > 500 characters
+- Single lines > 1000 characters
+- High semicolon density with minimal newlines
+- Filename contains `.min.`
+- High frequency of single-letter variables
 
 ---
 

@@ -2033,8 +2033,16 @@ class JavaScriptAnalyzer:
         # Detect minified files and warn user
         self._is_minified = self._detect_minified_file()
         if self._is_minified:
-            print(f"  [!] MINIFIED FILE DETECTED: {os.path.basename(self.file_path)}")
-            print(f"      -> Minified files may produce MORE FALSE POSITIVES. Review findings carefully.")
+            filename = os.path.basename(self.file_path)
+            print("")
+            print("  ╔══════════════════════════════════════════════════════════════════════════════╗")
+            print("  ║  ⚠️  MINIFIED FILE DETECTED                                                   ║")
+            print(f"  ║  File: {filename:<69} ║")
+            print("  ║                                                                              ║")
+            print("  ║  WARNING: Minified files may produce MORE FALSE POSITIVES.                  ║")
+            print("  ║  Findings from this file should be reviewed carefully.                      ║")
+            print("  ╚══════════════════════════════════════════════════════════════════════════════╝")
+            print("")
 
         self._check_eval_injection()
         self._check_command_injection()
