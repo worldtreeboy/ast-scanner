@@ -1609,6 +1609,93 @@ class PythonTaintTracker(ast.NodeVisitor):
                         confidence="MEDIUM", description="MongoDB query built from user-controlled dict."
                     ))
 
+            # 19. __builtins__ direct access for sandbox escape
+            if re.search(r'__builtins__\s*\[|__builtins__\s*\.\s*__dict__\s*\[|__builtins__\s*\.get\s*\(', line):
+                self.findings.append(Finding(
+                    file_path=self.file_path, line_number=i, col_offset=0,
+                    line_content=line, vulnerability_name="Code Injection - __builtins__ access",
+                    category=VulnCategory.CODE_INJECTION, severity=Severity.CRITICAL,
+                    confidence="HIGH", description="Direct __builtins__ access enables sandbox escape and arbitrary code execution."
+                ))
+
+            # 20. globals()/locals() for dynamic function access
+            if re.search(r'(?:globals|locals)\s*\(\s*\)\s*\[', line):
+                self.findings.append(Finding(
+                    file_path=self.file_path, line_number=i, col_offset=0,
+                    line_content=line, vulnerability_name="Code Injection - globals()/locals() dynamic access",
+                    category=VulnCategory.CODE_INJECTION, severity=Severity.HIGH,
+                    confidence="HIGH", description="Dynamic function access via globals()/locals() enables code execution evasion."
+                ))
+
+            # 21. Format string attribute chain for sandbox escape (Jinja2/SSTI style)
+            if re.search(r'\{[^}]*\.__class__|__mro__|__subclasses__|__globals__|__getattribute__', line):
+                self.findings.append(Finding(
+                    file_path=self.file_path, line_number=i, col_offset=0,
+                    line_content=line, vulnerability_name="SSTI/Sandbox Escape - Dunder attribute chain in format string",
+                    category=VulnCategory.SSTI, severity=Severity.CRITICAL,
+                    confidence="HIGH", description="Format string with __class__/__mro__/__subclasses__ chain enables sandbox escape."
+                ))
+
+            # 22. __subclasses__() for type enumeration and sandbox escape
+            if re.search(r'__subclasses__\s*\(\s*\)', line):
+                self.findings.append(Finding(
+                    file_path=self.file_path, line_number=i, col_offset=0,
+                    line_content=line, vulnerability_name="Sandbox Escape - __subclasses__() enumeration",
+                    category=VulnCategory.CODE_INJECTION, severity=Severity.CRITICAL,
+                    confidence="HIGH", description="__subclasses__() allows finding dangerous classes like subprocess.Popen for sandbox escape."
+                ))
+
+            # 23. vars() for dynamic attribute access
+            if re.search(r'vars\s*\([^)]*\)\s*\[', line):
+                context = '\n'.join(self.source_lines[max(0, i-3):i+1])
+                if any(taint in context for taint in self.tainted_vars):
+                    self.findings.append(Finding(
+                        file_path=self.file_path, line_number=i, col_offset=0,
+                        line_content=line, vulnerability_name="Code Injection - vars() with tainted key",
+                        category=VulnCategory.CODE_INJECTION, severity=Severity.HIGH,
+                        confidence="HIGH", description="vars() dynamic access with user-controlled key enables arbitrary attribute access."
+                    ))
+
+            # 24. importlib dynamic import
+            if re.search(r'importlib\.import_module\s*\(', line):
+                is_tainted = any(var in line for var in self.tainted_vars)
+                if is_tainted:
+                    self.findings.append(Finding(
+                        file_path=self.file_path, line_number=i, col_offset=0,
+                        line_content=line, vulnerability_name="Code Injection - importlib with tainted module name",
+                        category=VulnCategory.CODE_INJECTION, severity=Severity.CRITICAL,
+                        confidence="HIGH", description="Dynamic import with user-controlled module name enables arbitrary code loading."
+                    ))
+
+            # 25. exec/eval with compile() - multi-stage code execution
+            if re.search(r'(?:exec|eval)\s*\(\s*compile\s*\(', line):
+                self.findings.append(Finding(
+                    file_path=self.file_path, line_number=i, col_offset=0,
+                    line_content=line, vulnerability_name="Code Injection - exec/eval with compile()",
+                    category=VulnCategory.CODE_INJECTION, severity=Severity.CRITICAL,
+                    confidence="HIGH", description="Multi-stage code execution via compile() may indicate evasion attempt."
+                ))
+
+            # 26. type() constructor for dynamic class creation
+            if re.search(r'type\s*\(\s*[^,]+,\s*\([^)]*\)\s*,\s*\{', line):
+                self.findings.append(Finding(
+                    file_path=self.file_path, line_number=i, col_offset=0,
+                    line_content=line, vulnerability_name="Code Injection - Dynamic class creation via type()",
+                    category=VulnCategory.CODE_INJECTION, severity=Severity.HIGH,
+                    confidence="MEDIUM", description="type() with 3 args creates dynamic class - verify dict contents aren't user-controlled."
+                ))
+
+            # 27. String join to build dangerous commands
+            if re.search(r'["\'][\s]*\.join\s*\(', line):
+                context = '\n'.join(self.source_lines[max(0, i-2):min(len(self.source_lines), i+3)])
+                if re.search(r'subprocess|system|popen|eval|exec|shell', context, re.IGNORECASE):
+                    self.findings.append(Finding(
+                        file_path=self.file_path, line_number=i, col_offset=0,
+                        line_content=line, vulnerability_name="Evasion - String join near dangerous sink",
+                        category=VulnCategory.COMMAND_INJECTION, severity=Severity.HIGH,
+                        confidence="MEDIUM", description="String joining near command execution - potential evasion technique."
+                    ))
+
     def _track_database_sources(self):
         """Track variables that receive values from database/ORM queries.
 
@@ -2162,6 +2249,58 @@ class JavaScriptAnalyzer:
                                   VulnCategory.CODE_INJECTION, Severity.HIGH, "HIGH",
                                   "eval accessed via bracket notation on global object.")
 
+            # Pattern 8: Dynamic import() with tainted module path
+            if re.search(r'\bimport\s*\(', line):
+                has_taint = any(var in line for var in self.tainted_vars)
+                if has_taint:
+                    self._add_finding(i, "Code Injection - Dynamic import() with tainted path",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH",
+                                      "User-controlled module path in import() enables loading arbitrary code.")
+                elif re.search(r'import\s*\(\s*[^"\'\`]', line):  # Variable, not string literal
+                    self._add_finding(i, "Code Injection - Dynamic import() with variable",
+                                      VulnCategory.CODE_INJECTION, Severity.HIGH, "MEDIUM",
+                                      "Dynamic import() with variable path. Verify source is not user-controlled.")
+
+            # Pattern 9: this[tainted]() or obj[tainted]() - dynamic method invocation
+            dynamic_method = re.search(r'(?:this|self)\s*\[\s*(\w+)\s*\]\s*\(', line)
+            if dynamic_method:
+                method_var = dynamic_method.group(1)
+                if method_var in self.tainted_vars:
+                    self._add_finding(i, "Code Injection - this[tainted]() dynamic method call",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH",
+                                      f"User-controlled method name '{method_var}' enables arbitrary method invocation.")
+
+            # Pattern 10: window[tainted] or global[tainted] with tainted variable
+            global_tainted = re.search(r'(?:window|global|globalThis)\s*\[\s*(\w+)\s*\]', line)
+            if global_tainted:
+                prop_var = global_tainted.group(1)
+                if prop_var in self.tainted_vars:
+                    self._add_finding(i, "Code Injection - global[tainted] dynamic property access",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH",
+                                      f"User-controlled property '{prop_var}' on global object enables arbitrary function access.")
+
+            # Pattern 11: Reflect.get/Reflect.apply with tainted property
+            if re.search(r'Reflect\s*\.\s*(?:get|apply|construct)\s*\(', line):
+                has_taint = any(var in line for var in self.tainted_vars)
+                if has_taint:
+                    self._add_finding(i, "Code Injection - Reflect API with tainted argument",
+                                      VulnCategory.CODE_INJECTION, Severity.HIGH, "HIGH",
+                                      "Reflect API with user-controlled argument enables dynamic code access.")
+
+            # Pattern 12: Object.getOwnPropertyDescriptor for property access
+            if re.search(r'Object\s*\.\s*getOwnPropertyDescriptor\s*\(', line):
+                has_taint = any(var in line for var in self.tainted_vars)
+                if has_taint:
+                    self._add_finding(i, "Code Injection - getOwnPropertyDescriptor with tainted key",
+                                      VulnCategory.CODE_INJECTION, Severity.MEDIUM, "MEDIUM",
+                                      "Object property introspection with user-controlled key.")
+
+            # Pattern 13: with statement (enables scope pollution)
+            if re.search(r'\bwith\s*\(', line):
+                self._add_finding(i, "Code Injection - with statement scope pollution",
+                                  VulnCategory.CODE_INJECTION, Severity.MEDIUM, "MEDIUM",
+                                  "with statement can enable scope pollution and variable shadowing.")
+
     def _check_command_injection(self):
         """Check for command injection - including evasion techniques."""
         # Direct patterns
@@ -2274,6 +2413,97 @@ class JavaScriptAnalyzer:
                             self._add_finding(i, "Command Injection - exec with potentially tainted data",
                                               VulnCategory.COMMAND_INJECTION, Severity.HIGH, "MEDIUM",
                                               f"exec() called in context with tainted variables.")
+
+            # === ADVANCED EVASION: Level 1 - "Lazy Property" Dynamic Method Invocation ===
+            # Pattern: cp[method](parts.join(' ')) where method = 'ex' + 'ec'
+            # Detects: string concatenation to build method names like 'ex' + 'ec' = 'exec'
+            if re.search(r"['\"]ex['\"]?\s*\+\s*['\"]ec['\"]|['\"]exec['\"]\.split|'cexe'|'cnySexe'", line):
+                self._add_finding(i, "Command Injection Evasion - Obfuscated 'exec' string construction",
+                                  VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH",
+                                  "String concatenation builds 'exec' method name to evade detection. "
+                                  "Pattern: 'ex' + 'ec' = 'exec'")
+
+            # Pattern: variable[method](...) where variable is child_process module
+            bracket_method = re.search(r'(\w+)\s*\[\s*(\w+)\s*\]\s*\(', line)
+            if bracket_method:
+                obj_name = bracket_method.group(1)
+                method_var = bracket_method.group(2)
+                context = '\n'.join(self.source_lines[max(0, i-15):i+1])
+                # Check if obj is child_process (cp, childProcess, proc, etc.)
+                is_cp = re.search(rf'{obj_name}\s*=\s*require\s*\(\s*["\']child_process["\']\s*\)', context)
+                if is_cp:
+                    # Check if method variable was built from string concatenation
+                    method_built = re.search(rf'{method_var}\s*=\s*["\'][^"\']*["\']\s*\+', context)
+                    if method_built:
+                        self._add_finding(i, "Command Injection Evasion - Dynamic method on child_process",
+                                          VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH",
+                                          f"child_process[{method_var}]() where method name is dynamically constructed. "
+                                          "Attacker can invoke exec/execSync via string concatenation evasion.")
+                    else:
+                        self._add_finding(i, "Command Injection - Bracket notation on child_process module",
+                                          VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                          f"Dynamic method invocation {obj_name}[{method_var}]() on child_process. "
+                                          "Verify method name is not user-controlled.")
+
+            # Pattern: .join(' ') flowing to exec - command built from array
+            if re.search(r'\.join\s*\(\s*["\'][\s]*["\']\s*\)', line):
+                context = '\n'.join(self.source_lines[i-1:min(len(self.source_lines), i+5)])
+                if re.search(r'exec|spawn|child_process|\bcp\b', context, re.IGNORECASE):
+                    self._add_finding(i, "Command Injection Evasion - Array.join() builds command string",
+                                      VulnCategory.COMMAND_INJECTION, Severity.HIGH, "HIGH",
+                                      "Array parts joined with space flows to command execution. "
+                                      "Pattern: [bin, args].join(' ') -> exec()")
+
+            # === ADVANCED EVASION: Level 3 - Worker Thread Escape ===
+            # Pattern: new Worker(__filename, { workerData: userInput })
+            if re.search(r'new\s+Worker\s*\(', line):
+                has_taint = any(var in line for var in self.tainted_vars)
+                if re.search(r'workerData\s*:', line) and has_taint:
+                    self._add_finding(i, "Command Injection Evasion - Tainted data passed to Worker thread",
+                                      VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH",
+                                      "User-controlled data passed via workerData to Worker thread. "
+                                      "If worker uses execSync(workerData), this enables RCE. "
+                                      "Cross-thread taint flow detected.")
+                elif re.search(r'workerData\s*:', line):
+                    self._add_finding(i, "Potential Command Injection - Data passed to Worker thread",
+                                      VulnCategory.COMMAND_INJECTION, Severity.MEDIUM, "MEDIUM",
+                                      "Data passed to Worker via workerData. Verify worker doesn't execute it as command.")
+
+            # Pattern: execSync(workerData) in worker thread context
+            if re.search(r'exec(?:Sync)?\s*\(\s*workerData\s*\)', line):
+                self._add_finding(i, "Command Injection - Worker thread executes workerData",
+                                  VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH",
+                                  "Worker thread executes workerData as shell command. "
+                                  "If workerData comes from user input in main thread, this is RCE.")
+
+            # === ADVANCED EVASION: Level 4 - toString/valueOf Hijack (Implicit Execution) ===
+            # Pattern: toString: function() { return execSync(input) }
+            if re.search(r'toString\s*:\s*function\s*\(', line) or re.search(r'toString\s*:\s*\(\s*\)\s*=>', line):
+                context = '\n'.join(self.source_lines[i-1:min(len(self.source_lines), i+5)])
+                if re.search(r'exec|spawn|child_process|require\s*\(\s*["\']child_process', context):
+                    self._add_finding(i, "Command Injection Evasion - Hijacked toString() executes commands",
+                                      VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH",
+                                      "toString() method contains command execution. "
+                                      "Any string coercion (concatenation, template literal, console.log) triggers RCE. "
+                                      "Pattern: 'Status: ' + obj triggers obj.toString() -> execSync()")
+
+            # Pattern: valueOf hijack
+            if re.search(r'valueOf\s*:\s*function\s*\(', line) or re.search(r'valueOf\s*:\s*\(\s*\)\s*=>', line):
+                context = '\n'.join(self.source_lines[i-1:min(len(self.source_lines), i+5)])
+                if re.search(r'exec|spawn|child_process|require\s*\(\s*["\']child_process', context):
+                    self._add_finding(i, "Command Injection Evasion - Hijacked valueOf() executes commands",
+                                      VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH",
+                                      "valueOf() method contains command execution. "
+                                      "Numeric coercion triggers command execution.")
+
+            # Pattern: [Symbol.toPrimitive] hijack
+            if re.search(r'\[Symbol\.toPrimitive\]', line):
+                context = '\n'.join(self.source_lines[i-1:min(len(self.source_lines), i+5)])
+                if re.search(r'exec|spawn|child_process', context):
+                    self._add_finding(i, "Command Injection Evasion - Hijacked Symbol.toPrimitive executes commands",
+                                      VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH",
+                                      "Symbol.toPrimitive hijacked with command execution. "
+                                      "Type coercion triggers shell command.")
 
     def _check_sql_injection(self):
         """Check for SQL injection patterns - including evasion techniques."""
@@ -2561,6 +2791,101 @@ class JavaScriptAnalyzer:
 
         # Check for unsafe merge/extend function definitions
         self._check_unsafe_merge_functions()
+
+        # === ADVANCED EVASION: Level 2 - "Ghost Sink" Prototype Pollution RCE ===
+        # Detect when prototype pollution can affect later exec() calls
+        self._check_proto_pollution_rce()
+
+    def _check_proto_pollution_rce(self):
+        """
+        Detect "Ghost Sink" RCE via prototype pollution affecting exec() options.
+
+        Pattern:
+        1. Object.assign(config.__proto__, userInput) - pollutes Object.prototype
+        2. exec('echo success') - looks safe but inherits 'shell' option from polluted prototype
+
+        If attacker sends: {"__proto__": {"shell": "/bin/sh", "env": {"NODE_OPTIONS": "--inspect"}}}
+        The exec() call will use the polluted 'shell' option, enabling RCE.
+        """
+        # Track lines with prototype pollution
+        pollution_lines = []
+        exec_lines = []
+
+        # Patterns that pollute Object.prototype
+        pollution_patterns = [
+            r'Object\.assign\s*\([^,]+\.__proto__',           # Object.assign(x.__proto__, ...)
+            r'Object\.assign\s*\([^,]+\[[\s]*["\']__proto__', # Object.assign(x['__proto__'], ...)
+            r'\.__proto__\s*=\s*(?!null)',                    # x.__proto__ = something (not null)
+            r'\[[\s]*["\']__proto__["\'][\s]*\]\s*=',         # x['__proto__'] = something
+            r'Object\.setPrototypeOf\s*\(\s*Object\.prototype', # Object.setPrototypeOf(Object.prototype, ...)
+        ]
+
+        # Patterns for exec-family functions that read options from prototype
+        exec_patterns = [
+            r'exec\s*\(\s*["\']',              # exec('command') - looks safe
+            r'execSync\s*\(\s*["\']',          # execSync('command') - looks safe
+            r'spawn\s*\(\s*["\']',             # spawn('command') - looks safe
+            r'execFile\s*\(\s*["\']',          # execFile('command') - looks safe
+            r'fork\s*\(\s*["\']',              # fork('file') - looks safe
+        ]
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            # Track pollution points
+            for pattern in pollution_patterns:
+                if re.search(pattern, line):
+                    pollution_lines.append((i, line.strip()))
+                    break
+
+            # Track exec calls that look safe (static string argument)
+            for pattern in exec_patterns:
+                if re.search(pattern, line):
+                    exec_lines.append((i, line.strip()))
+                    break
+
+        # If we have both pollution and "safe-looking" exec calls, flag the Ghost Sink
+        if pollution_lines and exec_lines:
+            for poll_line, poll_content in pollution_lines:
+                # Check if there's user input flowing into the pollution
+                context = '\n'.join(self.source_lines[max(0, poll_line-10):poll_line])
+                has_user_input = re.search(
+                    r'req\.(body|query|params)|JSON\.parse|request\.|input\.|user\.',
+                    context + '\n' + poll_content,
+                    re.IGNORECASE
+                )
+
+                if has_user_input:
+                    self._add_finding(poll_line, "Prototype Pollution RCE - Ghost Sink Pattern (Source)",
+                                      VulnCategory.PROTOTYPE_POLLUTION, Severity.CRITICAL, "HIGH",
+                                      f"Prototype pollution with user input detected. "
+                                      f"This pollutes Object.prototype, affecting ALL objects including exec() options. "
+                                      f"Attacker payload: {{\"__proto__\": {{\"shell\": \"/bin/sh\"}}}}")
+
+                    # Flag the exec calls as affected sinks
+                    for exec_line, exec_content in exec_lines:
+                        if exec_line > poll_line:  # Only flag exec calls after pollution
+                            self._add_finding(exec_line, "Prototype Pollution RCE - Ghost Sink (Affected exec)",
+                                              VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH",
+                                              f"This exec() call LOOKS SAFE but inherits options from polluted prototype! "
+                                              f"Pollution source at line {poll_line}. exec() checks 'shell' property in options, "
+                                              f"which now comes from attacker-controlled Object.prototype.shell")
+
+        # Also detect Object.assign to __proto__ even without seeing exec
+        # Because the pollution affects the entire runtime
+        for i, line in enumerate(self.source_lines, 1):
+            if re.search(r'Object\.assign\s*\([^,]+\.__proto__\s*,', line):
+                context = '\n'.join(self.source_lines[max(0, i-5):i+1])
+                has_user_input = re.search(r'req\.|JSON\.parse|input|body|query|params', context, re.IGNORECASE)
+                if has_user_input:
+                    self._add_finding(i, "Prototype Pollution - Object.assign to __proto__ with user input",
+                                      VulnCategory.PROTOTYPE_POLLUTION, Severity.CRITICAL, "HIGH",
+                                      "Object.assign(obj.__proto__, userInput) pollutes Object.prototype. "
+                                      "ALL subsequent object operations inherit attacker-controlled properties. "
+                                      "This affects: exec() options, spawn() options, any options object. "
+                                      "Attacker can inject 'shell', 'env', 'cwd' properties for RCE.")
 
     def _check_unsafe_merge_functions(self):
         """Detect custom merge/extend functions that lack __proto__ protection."""
@@ -4414,12 +4739,48 @@ class JavaAnalyzer:
                                   VulnCategory.DESERIALIZATION, severity, "HIGH" if is_tainted else "MEDIUM",
                                   description="XStream.fromXML() can lead to RCE. Use security framework.")
 
-            if re.search(r'Yaml\s*\(\s*\)|\.load\s*\(.*Yaml', line):
-                is_tainted, taint_var = self._is_tainted(line)
-                if is_tainted:
-                    self._add_finding(i, "Insecure Deserialization - SnakeYAML with tainted data",
-                                      VulnCategory.DESERIALIZATION, Severity.CRITICAL, "HIGH", taint_var,
-                                      "SnakeYAML.load() with user input enables RCE.")
+            # SnakeYAML - Critical RCE vector via !!javax.script.ScriptEngineManager gadget
+            # Pattern 1: Direct Yaml.load() or yaml.load() calls
+            if re.search(r'\.load\s*\(', line) or re.search(r'\.loadAs\s*\(', line) or re.search(r'\.loadAll\s*\(', line):
+                context = '\n'.join(self.source_lines[max(0, i-10):i+1])
+                # Check if this is a SnakeYAML context (Yaml instance or import)
+                is_snakeyaml = re.search(r'import\s+org\.yaml\.snakeyaml|Yaml\s+\w+\s*=|new\s+Yaml\s*\(', context)
+                if is_snakeyaml:
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted:
+                        self._add_finding(i, "Insecure Deserialization - SnakeYAML.load() with untrusted data",
+                                          VulnCategory.DESERIALIZATION, Severity.CRITICAL, "HIGH", taint_var,
+                                          "SnakeYAML.load() with user input enables RCE via gadget chains. "
+                                          "Attacker can use !!javax.script.ScriptEngineManager to execute arbitrary code. "
+                                          "Use SafeConstructor: new Yaml(new SafeConstructor())")
+                    else:
+                        # Check if argument looks like it could be from request/user input
+                        load_arg_match = re.search(r'\.load(?:As|All)?\s*\(\s*(\w+)', line)
+                        if load_arg_match:
+                            arg_name = load_arg_match.group(1)
+                            # Check if this variable was assigned from request in context
+                            if re.search(rf'{arg_name}\s*=.*(?:request\.|getParameter|getInputStream|getReader)', context):
+                                self._add_finding(i, "Insecure Deserialization - SnakeYAML.load() with request data",
+                                                  VulnCategory.DESERIALIZATION, Severity.CRITICAL, "HIGH",
+                                                  description=f"SnakeYAML.load({arg_name}) where {arg_name} comes from HTTP request. "
+                                                  "RCE possible via !!javax.script.ScriptEngineManager gadget. "
+                                                  "Use SafeConstructor: new Yaml(new SafeConstructor())")
+                            else:
+                                self._add_finding(i, "Insecure Deserialization - SnakeYAML.load() usage",
+                                                  VulnCategory.DESERIALIZATION, Severity.HIGH, "MEDIUM",
+                                                  description="SnakeYAML.load() detected. If input is untrusted, this enables RCE. "
+                                                  "Use SafeConstructor: new Yaml(new SafeConstructor())")
+
+            # Pattern 2: new Yaml() without SafeConstructor - configuration warning
+            if re.search(r'new\s+Yaml\s*\(\s*\)', line):
+                # Check if SafeConstructor is used anywhere nearby
+                context = '\n'.join(self.source_lines[max(0, i-3):min(len(self.source_lines), i+3)])
+                if not re.search(r'SafeConstructor|BaseConstructor', context):
+                    self._add_finding(i, "Insecure Deserialization - Yaml without SafeConstructor",
+                                      VulnCategory.DESERIALIZATION, Severity.HIGH, "MEDIUM",
+                                      description="new Yaml() without SafeConstructor allows arbitrary object instantiation. "
+                                      "If used with untrusted input, RCE is possible. "
+                                      "Use: new Yaml(new SafeConstructor())")
 
     def _check_ssrf(self):
         """Check for SSRF patterns."""
@@ -4560,6 +4921,61 @@ class JavaAnalyzer:
                     self._add_finding(i, "JNDI Injection - lookup with tainted data",
                                       VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
                                       "User-controlled JNDI lookup can lead to RCE (Log4Shell-style).")
+
+            # SpEL (Spring Expression Language) injection
+            if re.search(r'SpelExpressionParser|ExpressionParser|parseExpression|StandardEvaluationContext', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "SpEL Injection - Expression parser with tainted data",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "User-controlled SpEL expression enables RCE via T(java.lang.Runtime).exec().")
+                elif re.search(r'parseExpression\s*\(', line):
+                    context = '\n'.join(self.source_lines[max(0, i-5):i+1])
+                    # Check for user input flowing into expression
+                    if re.search(r'request\.|@RequestParam|@PathVariable|getParameter', context):
+                        self._add_finding(i, "SpEL Injection - parseExpression near user input",
+                                          VulnCategory.CODE_INJECTION, Severity.HIGH, "MEDIUM",
+                                          description="SpEL parseExpression() near user input handling. Verify expression source.")
+
+            # OGNL (Object-Graph Navigation Language) injection - Struts2 style
+            if re.search(r'OgnlContext|Ognl\.getValue|Ognl\.setValue|OgnlUtil|ValueStack', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "OGNL Injection - OGNL evaluation with tainted data",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "User-controlled OGNL expression enables RCE (Struts2 CVE-style).")
+                else:
+                    self._add_finding(i, "OGNL Expression - Potential injection point",
+                                      VulnCategory.CODE_INJECTION, Severity.HIGH, "MEDIUM",
+                                      description="OGNL evaluation detected. Verify expression is not user-controlled.")
+
+            # MVEL (MVFLEX Expression Language) injection
+            if re.search(r'MVEL\.eval|MVEL\.compileExpression|MVELInterpretedRuntime', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "MVEL Injection - MVEL evaluation with tainted data",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "User-controlled MVEL expression enables code execution.")
+
+            # EL (Expression Language) injection in JSP/JSF
+            if re.search(r'ELProcessor|ExpressionFactory|ValueExpression|MethodExpression', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "EL Injection - Expression evaluation with tainted data",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "User-controlled EL expression can lead to code execution in JSP/JSF.")
+
+            # URLClassLoader for remote class loading
+            if re.search(r'URLClassLoader|new\s+URL\s*\([^)]*\)\s*.*\.loadClass', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "Remote Code Loading - URLClassLoader with tainted URL",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "User-controlled URL in class loader enables remote code execution.")
+                else:
+                    self._add_finding(i, "Remote Code Loading - URLClassLoader usage",
+                                      VulnCategory.CODE_INJECTION, Severity.HIGH, "MEDIUM",
+                                      description="URLClassLoader can load remote code. Verify URL source.")
 
     def _check_script_engine(self):
         """Check for script engine code injection, including Base64-decoded payloads."""
@@ -5870,6 +6286,55 @@ class PHPAnalyzer:
                                       VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
                                       "User input passed to assert().")
 
+            # call_user_func / call_user_func_array with tainted callback
+            if re.search(r'call_user_func(?:_array)?\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "Code Injection - call_user_func with tainted callback",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "User-controlled callback in call_user_func enables arbitrary function execution.")
+                # Check for array-based callback evasion: call_user_func([$obj, 'method'])
+                elif re.search(r'call_user_func\s*\(\s*\[', line):
+                    self._add_finding(i, "Code Injection - call_user_func with array callback",
+                                      VulnCategory.CODE_INJECTION, Severity.HIGH, "MEDIUM",
+                                      description="Array callback in call_user_func - verify callback source.")
+
+            # Variable functions: $func() where $func could be user-controlled
+            var_func_match = re.search(r'\$(\w+)\s*\(', line)
+            if var_func_match:
+                var_name = var_func_match.group(1)
+                # Skip common safe patterns like $this->method(), $callback(), etc.
+                if var_name not in ['this', 'self', 'parent', 'callback', 'handler', 'closure']:
+                    is_tainted, taint_var = self._is_tainted(line)
+                    if is_tainted or var_name in [v for v in self.tainted_vars]:
+                        self._add_finding(i, f"Code Injection - Variable function ${var_name}()",
+                                          VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", var_name,
+                                          f"Variable function ${var_name}() with user-controlled name enables arbitrary function execution.")
+
+            # ReflectionFunction / ReflectionMethod invoke
+            if re.search(r'(?:ReflectionFunction|ReflectionMethod|ReflectionClass)\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "Code Injection - Reflection with tainted input",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "Reflection API with user input enables arbitrary method/class access.")
+
+            # array_map/array_filter with user callback
+            if re.search(r'array_(?:map|filter|walk|reduce)\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "Code Injection - array function with tainted callback",
+                                      VulnCategory.CODE_INJECTION, Severity.HIGH, "HIGH", taint_var,
+                                      "Array function with user-controlled callback enables code execution.")
+
+            # usort/uasort/uksort with user callback
+            if re.search(r'u(?:a|k)?sort\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "Code Injection - usort with tainted callback",
+                                      VulnCategory.CODE_INJECTION, Severity.HIGH, "HIGH", taint_var,
+                                      "Sort function with user-controlled callback enables code execution.")
+
     def _check_file_inclusion(self):
         include_funcs = r'\b(include|include_once|require|require_once)\s*[\(\s]'
 
@@ -6895,6 +7360,58 @@ class CSharpAnalyzer:
                                   VulnCategory.DESERIALIZATION, Severity.HIGH, "HIGH",
                                   description=f"TypeNameHandling.{match.group(1)} enables arbitrary type instantiation. "
                                   "If used with untrusted JSON input, this leads to RCE.")
+
+            # PowerShell execution via System.Management.Automation
+            if re.search(r'System\.Management\.Automation|PowerShell\.Create|\.AddScript\s*\(|\.AddCommand\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "Command Injection - PowerShell execution with tainted input",
+                                      VulnCategory.COMMAND_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "User-controlled data in PowerShell script enables arbitrary command execution.")
+                elif re.search(r'\.AddScript\s*\(|\.AddCommand\s*\(', line):
+                    self._add_finding(i, "Command Injection - PowerShell script execution",
+                                      VulnCategory.COMMAND_INJECTION, Severity.HIGH, "MEDIUM",
+                                      description="PowerShell execution detected. Verify script content is not user-controlled.")
+
+            # Dynamic compilation via CSharpCodeProvider/Roslyn
+            if re.search(r'CSharpCodeProvider|CompileAssemblyFromSource|CSharpCompilation|SyntaxFactory', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "Code Injection - Dynamic C# compilation with tainted input",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "User-controlled code in dynamic compilation enables arbitrary code execution.")
+                else:
+                    self._add_finding(i, "Code Injection - Dynamic C# compilation",
+                                      VulnCategory.CODE_INJECTION, Severity.HIGH, "MEDIUM",
+                                      description="Dynamic C# compilation detected. Verify source code is not user-controlled.")
+
+            # Assembly.Load with byte array (potentially encoded assembly)
+            if re.search(r'Assembly\.Load\s*\(\s*(?:byte|Convert\.FromBase64)', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "Code Injection - Assembly.Load with tainted bytes",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "Loading assembly from user-controlled bytes enables arbitrary code execution.")
+                else:
+                    self._add_finding(i, "Code Injection - Assembly.Load from bytes",
+                                      VulnCategory.CODE_INJECTION, Severity.HIGH, "MEDIUM",
+                                      description="Assembly loaded from byte array - potential for encoded malicious assembly.")
+
+            # Expression trees with user input
+            if re.search(r'Expression\.Lambda|Expression\.Compile|DynamicExpression', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "Code Injection - Expression tree with tainted input",
+                                      VulnCategory.CODE_INJECTION, Severity.HIGH, "HIGH", taint_var,
+                                      "User-controlled data in expression tree compilation enables code injection.")
+
+            # Activator.CreateInstance with tainted type name
+            if re.search(r'Activator\.CreateInstance\s*\(', line):
+                is_tainted, taint_var = self._is_tainted(line)
+                if is_tainted:
+                    self._add_finding(i, "Code Injection - Activator.CreateInstance with tainted type",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                      "User-controlled type name in Activator.CreateInstance enables arbitrary object instantiation.")
 
     def _check_path_traversal(self):
         file_patterns = [
@@ -8371,10 +8888,8 @@ class ASTScanner:
         'webpack-runtime', 'runtime~', 'vendors~', 'vendor.',
     }
 
-    def __init__(self, verbose: bool = False, categories: Optional[List[str]] = None,
-                 scan_all: bool = False):
+    def __init__(self, verbose: bool = False, scan_all: bool = False):
         self.verbose = verbose
-        self.categories = categories
         self.scan_all = scan_all
         self.all_findings: List[Finding] = []
         self.files_scanned = 0
@@ -8530,39 +9045,7 @@ class ASTScanner:
                 if new_score > existing_score:
                     best_findings[key] = f
 
-        deduped = list(best_findings.values())
-
-        if not self.categories:
-            return deduped
-
-        category_map = {
-            'sql': VulnCategory.SQL_INJECTION,
-            'nosql': VulnCategory.NOSQL_INJECTION,
-            'code': VulnCategory.CODE_INJECTION,
-            'command': VulnCategory.COMMAND_INJECTION,
-            'deser': VulnCategory.DESERIALIZATION,
-            'deserialization': VulnCategory.DESERIALIZATION,
-            'ssti': VulnCategory.SSTI,
-            'ssrf': VulnCategory.SSRF,
-            'auth': VulnCategory.AUTH_BYPASS,
-            'proto': VulnCategory.PROTOTYPE_POLLUTION,
-            'xpath': VulnCategory.XPATH_INJECTION,
-            'xxe': VulnCategory.XXE,
-            'path': VulnCategory.PATH_TRAVERSAL,
-            'lfi': VulnCategory.LFI_RFI,
-            'rfi': VulnCategory.LFI_RFI,
-            'ldap': VulnCategory.LDAP_INJECTION,
-        }
-
-        allowed = set()
-        for cat in self.categories:
-            cat_lower = cat.lower()
-            if cat_lower in category_map:
-                allowed.add(category_map[cat_lower])
-            elif cat_lower == 'all':
-                return deduped
-
-        return [f for f in deduped if f.category in allowed]
+        return list(best_findings.values())
 
     def scan_directory(self, directory: Path) -> List[Finding]:
         """Recursively scan a directory."""
@@ -8711,30 +9194,13 @@ def main():
             Examples:
               python3 ast-scanner.py /path/to/project
               python3 ast-scanner.py app.py --verbose
-              python3 ast-scanner.py /path/to/project --category sql code ssrf
               python3 ast-scanner.py /path/to/project --output json -o report.json
-
-            Categories:
-              sql       - SQL Injection
-              nosql     - NoSQL Injection
-              code      - Code Injection (eval, exec)
-              command   - Command Injection (os.system, subprocess)
-              deser     - Insecure Deserialization
-              ssti      - Server-Side Template Injection
-              ssrf      - Server-Side Request Forgery
-              auth      - Authentication Bypass
-              proto     - Prototype Pollution
-              xpath     - XPath Injection
-              xxe       - XML External Entity
-              path      - Path Traversal
-              all       - All categories (default)
+              python3 ast-scanner.py /path/to/project --min-confidence HIGH
         ''')
     )
 
     parser.add_argument('target', help='File or directory to scan')
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose output')
-    parser.add_argument('-c', '--category', nargs='+', default=['all'],
-                        help='Categories to scan (default: all)')
     parser.add_argument('--output', choices=['text', 'json'], default='text',
                         help='Output format (default: text)')
     parser.add_argument('-o', '--output-file', help='Save report to file')
@@ -8760,8 +9226,7 @@ def main():
                       Taint Tracking | Multi-Language | Deep Analysis
     """)
 
-    scanner = ASTScanner(verbose=args.verbose, categories=args.category,
-                         scan_all=args.scan_all)
+    scanner = ASTScanner(verbose=args.verbose, scan_all=args.scan_all)
     findings = scanner.scan(args.target)
 
     # Filter by confidence

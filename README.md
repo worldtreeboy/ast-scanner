@@ -25,7 +25,7 @@
   <img src="https://img.shields.io/badge/python-3.8+-3776ab?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/languages-8+-22c55e?style=for-the-badge" alt="8+ Languages">
   <img src="https://img.shields.io/badge/2nd--Order-Detection-ff6b6b?style=for-the-badge" alt="2nd-Order">
-  <img src="https://img.shields.io/badge/version-2.1-blueviolet?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/version-3.0-blueviolet?style=for-the-badge" alt="Version">
 </p>
 
 <p align="center">
@@ -300,11 +300,13 @@ db.Products.FromSqlRaw(
 |----------|:---------:|:---------:|:-----------------:|
 | SQL Injection | Excellent | Excellent | strrev, base64 |
 | NoSQL Injection | Excellent | $where, $function | JSON poisoning |
-| Command Injection | Excellent | DB-sourced | getattr, LINQ |
-| Code Injection | Excellent | pandas, ScriptEngine | Proxy traps |
+| Command Injection | Excellent | DB-sourced | getattr, LINQ, Ghost Sink |
+| Code Injection | Excellent | pandas, ScriptEngine | Proxy traps, toString hijack |
 | XPath Injection | Excellent | Entity-sourced | StringBuilder |
-| Deserialization | Excellent | Double-unserialize | ViewState |
+| Deserialization | Excellent | Double-unserialize | ViewState, SnakeYAML |
 | XXE/XSLT | Excellent | - | XmlResolver |
+| Expression Language | Excellent | - | SpEL, OGNL, MVEL, EL |
+| Prototype Pollution | Excellent | Ghost Sink RCE | __proto__, Object.assign |
 
 ---
 
@@ -405,6 +407,93 @@ proxy.payload;  // Any property triggers eval
 ```
 </details>
 
+<details>
+<summary><b>Java: SnakeYAML Deserialization</b></summary>
+
+```java
+// DETECTED: SnakeYAML unsafe deserialization
+String yamlConfig = request.getParameter("config");
+Yaml yaml = new Yaml();  // No SafeConstructor!
+Object obj = yaml.load(yamlConfig);  // RCE via !!javax.script.ScriptEngineManager
+```
+</details>
+
+<details>
+<summary><b>Java: Expression Language Injection (SpEL/OGNL)</b></summary>
+
+```java
+// DETECTED: Spring Expression Language Injection
+String expr = request.getParameter("filter");
+ExpressionParser parser = new SpelExpressionParser();
+parser.parseExpression(expr).getValue();  // RCE via T(java.lang.Runtime)
+
+// DETECTED: OGNL Injection (Struts)
+String input = request.getParameter("expr");
+OgnlContext ctx = new OgnlContext();
+Ognl.getValue(input, ctx);  // RCE via @java.lang.Runtime@getRuntime().exec()
+```
+</details>
+
+### Advanced Node.js Evasion Detection
+
+The scanner detects sophisticated obfuscation techniques that bypass traditional scanners:
+
+<details>
+<summary><b>Level 1: Lazy Property Attack (String Concatenation)</b></summary>
+
+```javascript
+// DETECTED: Obfuscated child_process exec
+const cp = require('child_process');
+const method = 'ex' + 'ec';  // Hides "exec" from grep
+cp[method](userInput);       // Dynamic method invocation
+```
+</details>
+
+<details>
+<summary><b>Level 2: Prototype Pollution "Ghost Sink" RCE</b></summary>
+
+```javascript
+// DETECTED: Prototype pollution enables "safe-looking" exec
+const config = {};
+Object.assign(config.__proto__, JSON.parse(userInput));
+// Attacker sets: {"shell": true}
+
+// This LOOKS safe but inherits polluted shell option!
+execSync('echo hello');  // Now executes with shell=true from __proto__
+```
+</details>
+
+<details>
+<summary><b>Level 3: Worker Thread Cross-Context Taint</b></summary>
+
+```javascript
+// DETECTED: Taint flows through Worker threads
+const { Worker, workerData } = require('worker_threads');
+const payload = req.body.data;
+new Worker('./worker.js', { workerData: payload });
+
+// worker.js - executes in separate thread
+const { execSync } = require('child_process');
+execSync(workerData);  // Taint from main thread!
+```
+</details>
+
+<details>
+<summary><b>Level 4: toString Hijack Implicit Execution</b></summary>
+
+```javascript
+// DETECTED: Implicit code execution via toString hijack
+const obj = JSON.parse(userInput);
+obj.toString = function() {
+    require('child_process').exec(this.cmd);
+};
+
+// ANY string coercion triggers execution:
+console.log("Value: " + obj);  // toString() called implicitly
+`Template ${obj}`;              // Also triggers toString()
+```
+</details>
+
 ---
 
 ## Sample Output
@@ -473,7 +562,7 @@ FILE: models/UserPrefs.php
 ## CLI Reference
 
 ```bash
-usage: ast-scanner.py [-h] [-v] [-c CATEGORY] [--output {text,json}]
+usage: ast-scanner.py [-h] [-v] [--output {text,json}]
                       [-o FILE] [--min-confidence {HIGH,MEDIUM,LOW}]
                       [--scan-all] target
 
@@ -483,7 +572,6 @@ positional arguments:
 options:
   -h, --help                Show help message
   -v, --verbose             Detailed output
-  -c, --category CATEGORY   Filter: sql, nosql, xpath, code, command, deser, xxe, ssrf, ssti, xss, path
   --output {text,json}      Output format
   -o, --output-file FILE    Save to file
   --min-confidence LEVEL    HIGH, MEDIUM, or LOW
@@ -510,7 +598,7 @@ options:
 
 ```bash
 #!/bin/bash
-python3 ast-scanner.py . --min-confidence HIGH --category sql command code xpath
+python3 ast-scanner.py . --min-confidence HIGH
 [ $? -ne 0 ] && echo "Security issues found!" && exit 1
 ```
 
