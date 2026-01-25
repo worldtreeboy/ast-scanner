@@ -2051,6 +2051,7 @@ class JavaScriptAnalyzer:
         self._check_auth_bypass()
         self._check_xss()
         self._check_evasive_xss()
+        self._check_react_security()
         # 2nd-order detection
         self._check_second_order_nosql()
         self._check_second_order_cmdi()
@@ -2796,6 +2797,10 @@ class JavaScriptAnalyzer:
         # Detect when prototype pollution can affect later exec() calls
         self._check_proto_pollution_rce()
 
+        # === ADVANCED EVASION: Level 5 - Environment Variable Hijack ===
+        # Detect user-controlled keys/values being written to process.env
+        self._check_process_env_hijack()
+
     def _check_proto_pollution_rce(self):
         """
         Detect "Ghost Sink" RCE via prototype pollution affecting exec() options.
@@ -2886,6 +2891,152 @@ class JavaScriptAnalyzer:
                                       "ALL subsequent object operations inherit attacker-controlled properties. "
                                       "This affects: exec() options, spawn() options, any options object. "
                                       "Attacker can inject 'shell', 'env', 'cwd' properties for RCE.")
+
+    def _check_process_env_hijack(self):
+        """
+        Detect "Environment Hijack" RCE via user-controlled process.env modification.
+
+        Pattern:
+        1. User input parsed (e.g., JSON.parse(req.body.data))
+        2. for...in loop iterates user-controlled object keys
+        3. process.env[key] = value writes attacker-controlled keys to environment
+
+        Dangerous because attacker can set:
+        - NODE_OPTIONS: --require=./malicious.js or --loader=./evil.mjs
+        - NODE_DEBUG: Can leak sensitive debug info
+        - LD_PRELOAD / DYLD_INSERT_LIBRARIES: Inject shared libraries (on spawn)
+        - PATH: Hijack command resolution
+        - Any var that child_process inherits
+        """
+        # Track for...in loops over parsed/tainted objects
+        for_in_loops = []  # [(line, iterator_var, source_object)]
+
+        # Pattern: for (let/const/var key in object)
+        for_in_pattern = re.compile(
+            r'for\s*\(\s*(?:const|let|var)\s+(\w+)\s+in\s+(\w+)\s*\)'
+        )
+
+        # Find all for...in loops
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            match = for_in_pattern.search(line)
+            if match:
+                key_var = match.group(1)
+                source_obj = match.group(2)
+                for_in_loops.append((i, key_var, source_obj))
+
+        # Check each for...in loop for process.env assignments
+        for loop_line, key_var, source_obj in for_in_loops:
+            # Get context: lines before the loop to check if source_obj is tainted
+            context_start = max(0, loop_line - 15)
+            context_before = '\n'.join(self.source_lines[context_start:loop_line-1])
+
+            # Check if source_obj comes from user input
+            source_tainted = False
+            taint_source = ""
+
+            # Pattern: sourceObj = JSON.parse(req.body...)
+            if re.search(rf'{source_obj}\s*=\s*JSON\.parse\s*\(\s*req\.(body|query|params)', context_before):
+                source_tainted = True
+                taint_source = "JSON.parse(req.body)"
+            # Pattern: sourceObj = req.body
+            elif re.search(rf'{source_obj}\s*=\s*req\.(body|query|params)', context_before):
+                source_tainted = True
+                taint_source = "req.body/query/params"
+            # Pattern: const { sourceObj } = req.body (destructuring)
+            elif re.search(rf'\{{\s*[^}}]*\b{source_obj}\b[^}}]*\}}\s*=\s*req\.(body|query|params)', context_before):
+                source_tainted = True
+                taint_source = "destructured from req.body"
+            # Pattern: sourceObj comes from JSON.parse of anything user-controlled
+            elif re.search(rf'{source_obj}\s*=\s*JSON\.parse', context_before):
+                source_tainted = True
+                taint_source = "JSON.parse()"
+            # Pattern: sourceObj is in tainted_vars
+            elif source_obj in self.tainted_vars:
+                source_tainted = True
+                taint_source = "tainted variable"
+
+            if not source_tainted:
+                continue
+
+            # Now check the loop body for process.env[key] = ...
+            # Get lines after for...in until we hit a closing brace at same level
+            brace_depth = 0
+            loop_body_start = loop_line
+            loop_body_end = min(loop_line + 30, len(self.source_lines))
+
+            for j in range(loop_line - 1, min(loop_line + 30, len(self.source_lines))):
+                body_line = self.source_lines[j]
+                brace_depth += body_line.count('{') - body_line.count('}')
+                if brace_depth <= 0 and j > loop_line:
+                    loop_body_end = j + 1
+                    break
+
+            loop_body = '\n'.join(self.source_lines[loop_line:loop_body_end])
+
+            # Check for process.env[keyVar] = ...
+            env_assign_pattern = re.compile(
+                rf'process\.env\s*\[\s*{key_var}\s*\]\s*='
+            )
+
+            if env_assign_pattern.search(loop_body):
+                self._add_finding(loop_line, "Environment Variable Hijack - User-controlled process.env keys",
+                                  VulnCategory.PROTOTYPE_POLLUTION, Severity.CRITICAL, "HIGH",
+                                  f"for...in loop over {taint_source} writes to process.env[{key_var}]. "
+                                  f"Attacker can inject NODE_OPTIONS='--require=./malicious.js' for RCE on next spawn/fork, "
+                                  f"or PATH hijacking, LD_PRELOAD injection. process.env is a GLOBAL SINK.")
+
+        # Also detect direct process.env[tainted] = ... (without for...in)
+        # Pattern: process.env[userInput] = ... or process.env[variable_from_req] = ...
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            # Match process.env[something] = ...
+            env_match = re.search(r'process\.env\s*\[\s*(\w+)\s*\]\s*=', line)
+            if env_match:
+                key_var = env_match.group(1)
+
+                # Check if key_var is tainted
+                if key_var in self.tainted_vars:
+                    self._add_finding(i, "Environment Variable Hijack - Tainted key in process.env",
+                                      VulnCategory.PROTOTYPE_POLLUTION, Severity.CRITICAL, "HIGH",
+                                      f"User-controlled variable '{key_var}' used as process.env key. "
+                                      f"Attacker can set NODE_OPTIONS, PATH, LD_PRELOAD for code execution.")
+
+                # Check for req.body/query direct use
+                if re.search(r'process\.env\s*\[\s*req\.(body|query|params)', line):
+                    self._add_finding(i, "Environment Variable Hijack - Direct req input as env key",
+                                      VulnCategory.PROTOTYPE_POLLUTION, Severity.CRITICAL, "HIGH",
+                                      "Request parameter used directly as process.env key - RCE via NODE_OPTIONS injection.")
+
+        # Detect Object.assign/spread to process.env
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            # Object.assign(process.env, userInput)
+            if re.search(r'Object\.assign\s*\(\s*process\.env\s*,', line):
+                context = '\n'.join(self.source_lines[max(0, i-10):i+1])
+                if re.search(r'req\.(body|query|params)|JSON\.parse|tainted|\binput\b', context, re.IGNORECASE):
+                    self._add_finding(i, "Environment Variable Hijack - Object.assign to process.env",
+                                      VulnCategory.PROTOTYPE_POLLUTION, Severity.CRITICAL, "HIGH",
+                                      "Object.assign merges user input into process.env. "
+                                      "Attacker controls all environment variables - RCE via NODE_OPTIONS, PATH, etc.")
+
+            # Spread: process.env = { ...process.env, ...userInput }
+            if re.search(r'process\.env\s*=\s*\{[^}]*\.\.\.', line):
+                context = '\n'.join(self.source_lines[max(0, i-10):i+1])
+                if re.search(r'req\.(body|query|params)|JSON\.parse|tainted|\binput\b', context, re.IGNORECASE):
+                    self._add_finding(i, "Environment Variable Hijack - Spread operator to process.env",
+                                      VulnCategory.PROTOTYPE_POLLUTION, Severity.CRITICAL, "HIGH",
+                                      "Spread operator merges user input into process.env. "
+                                      "Attacker controls environment variables for RCE.")
 
     def _check_unsafe_merge_functions(self):
         """Detect custom merge/extend functions that lack __proto__ protection."""
@@ -4058,6 +4209,204 @@ class JavaScriptAnalyzer:
                                           VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH",
                                           "Proxy handler 'apply' trap contains dangerous sink. "
                                           "Calling the proxy as a function executes malicious code.")
+
+    def _check_react_security(self):
+        """
+        Comprehensive React/JSX security analysis - Levels 1-5 plus enterprise requirements.
+
+        Level 1: dangerouslySetInnerHTML - The Classic XSS
+        Level 2: href/src with tainted variables (javascript: protocol injection)
+        Level 3: setTimeout/setInterval with string argument (eval in disguise)
+        Level 4: Prop spreading - Mass assignment attack {...untrustedProps}
+        Level 5: useRef DOM manipulation (ref.current.innerHTML bypass)
+
+        Additional checks:
+        - Secret in Props (sensitive data in data-* attributes)
+        - SSR Hydration (Next.js getServerSideProps taint)
+        """
+        # Track component props that might be tainted
+        component_props = set()  # Props from function signature
+        tainted_refs = {}  # ref_name -> line where created
+        json_parsed_vars = {}  # var_name -> line
+
+        # First pass: identify props, refs, and JSON.parse results
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            # Detect React component props: const Component = ({ prop1, prop2 }) =>
+            # or function Component({ prop1, prop2 })
+            props_match = re.search(r'(?:const\s+\w+\s*=\s*\(\s*\{|function\s+\w+\s*\(\s*\{)\s*([^}]+)\s*\}', line)
+            if props_match:
+                props_str = props_match.group(1)
+                props = [p.strip().split('=')[0].strip() for p in props_str.split(',')]
+                component_props.update(p for p in props if p and not p.startswith('...'))
+
+            # Detect useRef: const myRef = React.useRef() or useRef()
+            ref_match = re.search(r'(?:const|let|var)\s+(\w+)\s*=\s*(?:React\.)?useRef\s*\(', line)
+            if ref_match:
+                tainted_refs[ref_match.group(1)] = i
+
+            # Detect JSON.parse results
+            json_match = re.search(r'(?:const|let|var)\s+(\w+)\s*=\s*JSON\.parse\s*\(', line)
+            if json_match:
+                json_parsed_vars[json_match.group(1)] = i
+
+        # Second pass: detect vulnerabilities
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            # === LEVEL 1: dangerouslySetInnerHTML (already covered, but enhance) ===
+            if re.search(r'dangerouslySetInnerHTML\s*=\s*\{\s*\{', line):
+                # Check if __html contains a prop or tainted var
+                html_match = re.search(r'__html\s*:\s*(\w+)', line)
+                if html_match:
+                    var_name = html_match.group(1)
+                    if var_name in component_props or var_name in self.tainted_vars:
+                        self._add_finding(i, "React XSS Level 1 - dangerouslySetInnerHTML with prop/tainted data",
+                                          VulnCategory.XSS, Severity.CRITICAL, "HIGH",
+                                          f"dangerouslySetInnerHTML receives '{var_name}' from props/user input. "
+                                          f"Direct XSS vulnerability - attacker controls HTML content.")
+
+            # === LEVEL 2: href/src with tainted variables (javascript: protocol) ===
+            # Detect: <a href={userLink}> or <img src={userInput}>
+            href_src_match = re.search(r'(?:href|src|action|formAction)\s*=\s*\{\s*(\w+)\s*\}', line)
+            if href_src_match:
+                var_name = href_src_match.group(1)
+                attr_name = re.search(r'(href|src|action|formAction)', line).group(1)
+                if var_name in component_props or var_name in self.tainted_vars:
+                    self._add_finding(i, f"React XSS Level 2 - Tainted {attr_name} attribute",
+                                      VulnCategory.XSS, Severity.CRITICAL, "HIGH",
+                                      f"User-controlled variable '{var_name}' in {attr_name} attribute. "
+                                      f"Attack: 'javascript:alert(1)' or 'data:text/html,...' for XSS. "
+                                      f"Validate protocol is http/https only.")
+
+            # Also catch template literals in href/src
+            if re.search(r'(?:href|src)\s*=\s*\{.*`.*\$\{', line):
+                self._add_finding(i, "React XSS Level 2 - Template literal in href/src",
+                                  VulnCategory.XSS, Severity.HIGH, "HIGH",
+                                  "Template literal with interpolation in href/src. "
+                                  "Verify protocol validation to prevent javascript: injection.")
+
+            # === LEVEL 3: setTimeout/setInterval with string (eval in disguise) ===
+            # setTimeout(userInput, 1000) where userInput is a string acts like eval
+            timeout_match = re.search(r'(setTimeout|setInterval)\s*\(\s*(\w+)\s*,', line)
+            if timeout_match:
+                func_name = timeout_match.group(1)
+                first_arg = timeout_match.group(2)
+                # Check if first arg is a prop or tainted (likely a string, not function)
+                if first_arg in component_props or first_arg in self.tainted_vars:
+                    self._add_finding(i, f"React RCE Level 3 - {func_name} with tainted string argument",
+                                      VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH",
+                                      f"{func_name}({first_arg}, delay) - if '{first_arg}' is a string, "
+                                      f"it's evaluated as code (equivalent to eval). "
+                                      f"User-controlled code execution vulnerability.")
+
+            # Also catch direct prop usage: setTimeout(props.code, ...)
+            if re.search(r'(setTimeout|setInterval)\s*\(\s*(?:props|this\.props)\.\w+\s*,', line):
+                self._add_finding(i, "React RCE Level 3 - setTimeout/setInterval with props",
+                                  VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH",
+                                  "setTimeout/setInterval with props value as first argument. "
+                                  "If prop is a string (not function), it executes as code.")
+
+            # === LEVEL 4: Prop Spreading - Mass Assignment Attack ===
+            # Detect: <img {...untrustedProps} /> or <div {...JSON.parse(userInput)} />
+            spread_match = re.search(r'<(\w+)[^>]*\{\s*\.\.\.(\w+)\s*\}', line)
+            if spread_match:
+                element = spread_match.group(1)
+                spread_var = spread_match.group(2)
+
+                # Check if spread var is from JSON.parse or props
+                if spread_var in json_parsed_vars:
+                    self._add_finding(i, f"React XSS Level 4 - Prop spreading JSON.parse result to <{element}>",
+                                      VulnCategory.XSS, Severity.CRITICAL, "HIGH",
+                                      f"Spreading JSON.parse result onto <{element}>. "
+                                      f"Attacker can inject {{\"onError\": \"alert(1)\", \"src\": \"x\"}} "
+                                      f"to execute JavaScript via event handlers. Mass assignment vulnerability.")
+                elif spread_var in component_props or spread_var in self.tainted_vars:
+                    self._add_finding(i, f"React XSS Level 4 - Prop spreading tainted variable to <{element}>",
+                                      VulnCategory.XSS, Severity.CRITICAL, "HIGH",
+                                      f"Spreading untrusted variable '{spread_var}' onto <{element}>. "
+                                      f"Attacker controls all attributes including event handlers (onClick, onError, etc.).")
+
+            # Catch inline JSON.parse spread: {...JSON.parse(something)}
+            if re.search(r'\{\s*\.\.\.JSON\.parse\s*\(', line):
+                self._add_finding(i, "React XSS Level 4 - Inline JSON.parse prop spreading",
+                                  VulnCategory.XSS, Severity.CRITICAL, "HIGH",
+                                  "Spreading JSON.parse() result directly onto element. "
+                                  "Attacker can inject any attribute including event handlers.")
+
+            # === LEVEL 5: useRef DOM Manipulation ===
+            # Detect: myRef.current.innerHTML = userInput
+            for ref_name, ref_line in tainted_refs.items():
+                ref_innerHTML = re.search(rf'{ref_name}\.current\.(innerHTML|outerHTML|textContent)\s*=\s*(\w+)', line)
+                if ref_innerHTML:
+                    property_name = ref_innerHTML.group(1)
+                    assigned_var = ref_innerHTML.group(2)
+                    if assigned_var in component_props or assigned_var in self.tainted_vars:
+                        severity = Severity.CRITICAL if property_name in ['innerHTML', 'outerHTML'] else Severity.HIGH
+                        self._add_finding(i, f"React XSS Level 5 - useRef {property_name} with tainted data",
+                                          VulnCategory.XSS, severity, "HIGH",
+                                          f"useRef bypasses React's XSS protection. "
+                                          f"{ref_name}.current.{property_name} = {assigned_var} "
+                                          f"writes directly to DOM with user-controlled content.")
+
+            # === SECRET LEAK: Sensitive data in data-* attributes ===
+            # Detect: data-token={userAuthToken} or data-*={secret}
+            data_attr_match = re.search(r'data-[\w-]+\s*=\s*\{\s*(\w+)\s*\}', line)
+            if data_attr_match:
+                var_name = data_attr_match.group(1)
+                sensitive_patterns = ['token', 'auth', 'secret', 'key', 'password', 'credential', 'session', 'jwt', 'api']
+                if any(p in var_name.lower() for p in sensitive_patterns):
+                    self._add_finding(i, "Secret Leak - Sensitive data in data-* attribute",
+                                      VulnCategory.INFO_DISCLOSURE, Severity.HIGH, "HIGH",
+                                      f"Sensitive variable '{var_name}' exposed in data-* attribute. "
+                                      f"This is visible in client-side HTML and can be extracted by attackers.")
+
+            # Also check for isAdmin, role, permission type props in attributes
+            if re.search(r'data-[\w-]*(?:admin|role|permission|privilege)[\w-]*\s*=', line, re.IGNORECASE):
+                self._add_finding(i, "Secret Leak - Authorization data in data-* attribute",
+                                  VulnCategory.INFO_DISCLOSURE, Severity.HIGH, "HIGH",
+                                  "Authorization/role information exposed in client-side HTML attribute. "
+                                  "This can be used for privilege enumeration attacks.")
+
+            # === SSR HYDRATION: Next.js getServerSideProps ===
+            # Detect: export async function getServerSideProps(context)
+            if re.search(r'(?:export\s+)?(?:async\s+)?function\s+getServerSideProps\s*\(', line):
+                # Look ahead for context.query or context.params usage in props return
+                context_end = min(len(self.source_lines), i + 30)
+                func_body = '\n'.join(self.source_lines[i-1:context_end])
+
+                # Check for direct taint to props
+                if re.search(r'context\.(query|params|req\.body)', func_body):
+                    if re.search(r'return\s*\{\s*props\s*:\s*\{[^}]*(?:context\.(query|params)|req\.)', func_body):
+                        self._add_finding(i, "SSR Hydration - Unsanitized context in getServerSideProps",
+                                          VulnCategory.XSS, Severity.HIGH, "HIGH",
+                                          "getServerSideProps passes unsanitized context.query/params directly to props. "
+                                          "This data is serialized into HTML and can cause XSS during hydration.")
+
+                # Check for variables derived from context being passed
+                taint_to_props = re.search(r'(?:const|let|var)\s+(\w+)\s*=\s*context\.(query|params|req)', func_body)
+                if taint_to_props:
+                    tainted_var = taint_to_props.group(1)
+                    if re.search(rf'props\s*:\s*\{{[^}}]*{tainted_var}', func_body):
+                        self._add_finding(i, "SSR Hydration - Tainted variable in getServerSideProps props",
+                                          VulnCategory.XSS, Severity.HIGH, "HIGH",
+                                          f"Variable '{tainted_var}' from context passed to props without sanitization. "
+                                          f"Next.js serializes this into __NEXT_DATA__ script tag - XSS vector.")
+
+            # === BONUS: getStaticProps with dynamic data (less severe but still worth flagging) ===
+            if re.search(r'(?:export\s+)?(?:async\s+)?function\s+getStaticProps\s*\(', line):
+                context_end = min(len(self.source_lines), i + 20)
+                func_body = '\n'.join(self.source_lines[i-1:context_end])
+                if re.search(r'fetch\s*\(|axios|request\(', func_body):
+                    self._add_finding(i, "Info: getStaticProps with external data fetch",
+                                      VulnCategory.INFO_DISCLOSURE, Severity.LOW, "MEDIUM",
+                                      "getStaticProps fetches external data. Ensure the data source is trusted "
+                                      "as it will be embedded in static HTML.")
 
     def _check_second_order_nosql(self):
         """Detect 2nd-order NoSQL injection with DB-sourced values in MongoDB operators."""

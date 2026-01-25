@@ -313,7 +313,7 @@ db.Products.FromSqlRaw(
 ## Quick Start
 
 ```bash
-# Clone
+# Clone (rename repo on GitHub: Settings → Repository name)
 git clone https://github.com/worldtreeboy/ast-scanner.git
 cd ast-scanner
 
