@@ -3839,7 +3839,8 @@ class JavaAnalyzer:
     def _identify_method_params(self):
         """Identify method parameters as potential taint sources."""
         # Match method declarations with parameters
-        method_pattern = r'(?:public|private|protected|static|\s)+\s+\w+\s+(\w+)\s*\(([^)]*)\)'
+        # Handle generic return types like List<?>, Map<K,V>, Optional<User>
+        method_pattern = r'(?:public|private|protected|static|\s)+\s+[\w<>,?\s\[\]]+\s+(\w+)\s*\(([^)]*)\)'
 
         for i, line in enumerate(self.source_lines, 1):
             match = re.search(method_pattern, line)
@@ -4109,16 +4110,42 @@ class JavaAnalyzer:
                     self.db_sourced_vars[new_var] = (i, f"{orig_source}...get{final_getter}()")
 
     def _is_db_sourced(self, line: str) -> Tuple[bool, Optional[str], Optional[str]]:
-        """Check if line uses a database/entity-sourced variable."""
+        """Check if line uses a database/entity-sourced variable.
+
+        Only matches variables on the RHS of assignments, not LHS declarations.
+        """
+        # Split at first = to get RHS only (for assignments)
+        if '=' in line and not line.strip().startswith('if') and not line.strip().startswith('while'):
+            parts = line.split('=', 1)
+            if len(parts) == 2:
+                rhs = parts[1]
+            else:
+                rhs = line
+        else:
+            rhs = line
+
         for var, (src_line, source) in self.db_sourced_vars.items():
-            if re.search(rf'\b{re.escape(var)}\b', line):
+            if re.search(rf'\b{re.escape(var)}\b', rhs):
                 return True, var, source
         return False, None, None
 
     def _is_tainted(self, line: str) -> Tuple[bool, Optional[str]]:
-        """Check if a line contains tainted data."""
+        """Check if a line contains tainted data.
+
+        Only matches variables on the RHS of assignments, not LHS declarations.
+        """
+        # Split at first = to get RHS only (for assignments)
+        if '=' in line and not line.strip().startswith('if') and not line.strip().startswith('while'):
+            parts = line.split('=', 1)
+            if len(parts) == 2:
+                rhs = parts[1]
+            else:
+                rhs = line
+        else:
+            rhs = line
+
         for var_name in self.tainted_vars:
-            if re.search(rf'\b{re.escape(var_name)}\b', line):
+            if re.search(rf'\b{re.escape(var_name)}\b', rhs):
                 return True, var_name
         return False, None
 
@@ -4130,6 +4157,13 @@ class JavaAnalyzer:
 
     def analyze(self) -> List[Finding]:
         """Run the analysis."""
+        # Run evasive pattern checks FIRST so they take priority over generic checks
+        self._check_encoding_passthrough()
+        self._check_spring_query_annotation()
+        self._check_stringbuilder_chain()
+        self._check_lambda_stream_injection()
+        self._check_array_varargs_injection()
+        # Then run standard checks
         self._check_sql_injection()
         self._check_command_injection()
         self._check_deserialization()
@@ -4985,6 +5019,271 @@ class JavaAnalyzer:
                         VulnCategory.XPATH_INJECTION, Severity.CRITICAL, "HIGH", db_var,
                         f"Entity getter from {source} used directly in XPath.evaluate()."
                     )
+
+    def _check_reflection_injection(self):
+        """Detect SQL injection via reflection - the 'Reflection Ghost' pattern.
+
+        Pattern: Method.invoke(statement, taintedQuery)
+        Scanners looking for executeQuery() see nothing - it's hidden behind invoke().
+        """
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+                continue
+
+            # Method.invoke() with tainted argument
+            if re.search(r'\.invoke\s*\(', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "Evasive SQLi - Reflection Ghost (Method.invoke with entity value)",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} passed to Method.invoke(). "
+                        "Reflection hides the actual SQL execution method."
+                    )
+                # Check for tainted variables in invoke
+                for var in self.tainted_vars:
+                    if re.search(rf'\b{re.escape(var)}\b', line):
+                        self._add_finding(
+                            i, "Evasive SQLi - Reflection Ghost (Method.invoke with tainted data)",
+                            VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", var,
+                            "Tainted data passed to Method.invoke(). Reflection bypasses sink detection."
+                        )
+                        break
+
+            # Class.forName with entity-sourced class name (RCE risk)
+            if re.search(r'Class\.forName\s*\(', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "Evasive RCE - Class.forName with entity value",
+                        VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} in Class.forName(). Can load arbitrary classes."
+                    )
+
+            # getDeclaredMethod/getMethod with tainted method name
+            if re.search(r'\.get(?:Declared)?Method\s*\(', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "Evasive RCE - getDeclaredMethod with entity value",
+                        VulnCategory.CODE_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} used to get method by name. Enables arbitrary method calls."
+                    )
+
+    def _check_spring_query_annotation(self):
+        """Detect SQL injection in Spring @Query annotations.
+
+        The vulnerability is in METADATA, not code!
+        Most scanners ignore annotations entirely.
+        """
+        in_annotation = False
+        annotation_start = 0
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+
+            # Detect @Query annotation with SpEL or concatenation
+            if re.search(r'@Query\s*\(', line):
+                in_annotation = True
+                annotation_start = i
+
+            if in_annotation:
+                # SpEL injection: #{#param} in native query
+                if re.search(r'#\{#?\w+', line) and re.search(r'nativeQuery\s*=\s*true', line):
+                    self._add_finding(
+                        i, "Spring @Query SpEL Injection (nativeQuery)",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH",
+                        description="SpEL expression in native query annotation. "
+                                   "Parameter values can inject SQL via :#{#param} syntax."
+                    )
+
+                # SpEL in ORDER BY clause
+                if re.search(r'ORDER\s+BY.*#\{', line, re.IGNORECASE):
+                    self._add_finding(
+                        i, "Spring @Query ORDER BY Injection",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH",
+                        description="SpEL in ORDER BY clause. Allows structural SQL injection."
+                    )
+
+                # Check for closing paren
+                if ')' in line and in_annotation:
+                    in_annotation = False
+
+            # @NamedNativeQuery with dynamic content
+            if re.search(r'@NamedNativeQuery\s*\(', line):
+                context = '\n'.join(self.source_lines[i-1:min(len(self.source_lines), i+5)])
+                if re.search(r'query\s*=.*:', context):
+                    self._add_finding(
+                        i, "JPA @NamedNativeQuery with parameter placeholder",
+                        VulnCategory.SQL_INJECTION, Severity.HIGH, "MEDIUM",
+                        description="Named native query with parameter. Verify parameter is not used in structural position."
+                    )
+
+    def _check_stringbuilder_chain(self):
+        """Detect taint flow through StringBuilder chains.
+
+        Pattern: StringBuilder built across multiple methods loses taint tracking.
+        """
+        # Track StringBuilder variables
+        builder_vars = {}  # var -> (line, is_tainted)
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            # StringBuilder creation
+            match = re.search(r'(\w+)\s*=\s*new\s+StringBuilder\s*\(', line)
+            if match:
+                var_name = match.group(1)
+                builder_vars[var_name] = (i, False)
+
+            # Check for append with tainted data
+            for builder_var in list(builder_vars.keys()):
+                append_match = re.search(rf'{re.escape(builder_var)}\.append\s*\(', line)
+                if append_match:
+                    is_db, db_var, source = self._is_db_sourced(line)
+                    if is_db:
+                        builder_vars[builder_var] = (i, True)
+
+                    for taint_var in self.tainted_vars:
+                        if re.search(rf'\b{re.escape(taint_var)}\b', line):
+                            builder_vars[builder_var] = (i, True)
+
+            # Check for toString() used in SQL sink
+            for builder_var, (def_line, is_tainted) in builder_vars.items():
+                if is_tainted and re.search(rf'{re.escape(builder_var)}\.toString\s*\(\s*\)', line):
+                    # Check if this flows to SQL execution
+                    context = '\n'.join(self.source_lines[i-1:min(len(self.source_lines), i+3)])
+                    if re.search(r'executeQuery|createQuery|createNativeQuery|execute\s*\(', context):
+                        self._add_finding(
+                            i, "Evasive SQLi - StringBuilder chain with tainted data",
+                            VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", builder_var,
+                            "StringBuilder accumulated tainted data across method calls. "
+                            "Taint flows through append() chain to SQL sink."
+                        )
+
+    def _check_encoding_passthrough(self):
+        """Detect SQL injection through encoding functions.
+
+        unhex(), from_base64(), CONVERT() do NOT sanitize - they're passthroughs!
+        """
+        encoding_funcs = [
+            (r"unhex\s*\(", "unhex()"),
+            (r"from_base64\s*\(", "from_base64()"),
+            (r"CONVERT\s*\([^)]*USING", "CONVERT...USING"),
+            (r"DECODE\s*\(", "DECODE()"),
+            (r"HEX\s*\(", "HEX()"),
+            (r"TO_BASE64\s*\(", "TO_BASE64()"),
+        ]
+
+        sql_keywords = r'(?:SELECT|INSERT|UPDATE|DELETE|FROM|WHERE)'
+
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            for pattern, func_name in encoding_funcs:
+                if re.search(pattern, line, re.IGNORECASE):
+                    # Check if in SQL context (execution or string construction)
+                    is_sql_context = (
+                        re.search(r'createNativeQuery|createQuery|executeQuery|execute\s*\(', line) or
+                        (re.search(sql_keywords, line, re.IGNORECASE) and '+' in line)
+                    )
+
+                    if is_sql_context:
+                        is_db, db_var, source = self._is_db_sourced(line)
+                        if is_db:
+                            self._add_finding(
+                                i, f"Evasive SQLi - Encoding bypass via {func_name}",
+                                VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                                f"{func_name} does NOT sanitize input - it's a passthrough! "
+                                f"Entity value from {source} flows through encoder to SQL."
+                            )
+                        else:
+                            # Check for tainted variables (use RHS only to avoid matching declarations)
+                            rhs = line.split('=', 1)[1] if '=' in line else line
+                            for taint_var in self.tainted_vars:
+                                if re.search(rf'\b{re.escape(taint_var)}\b', rhs):
+                                    self._add_finding(
+                                        i, f"Evasive SQLi - Encoding bypass via {func_name}",
+                                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", taint_var,
+                                        f"{func_name} does NOT sanitize - tainted data passes through to SQL."
+                                    )
+                                    break
+
+    def _check_lambda_stream_injection(self):
+        """Detect taint flow through lambda/stream operations.
+
+        Functional programming can hide taint flow from scanners.
+        """
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            # Lambda with SQL concatenation
+            if re.search(r'->\s*["\'].*(?:SELECT|INSERT|UPDATE|DELETE|FROM|WHERE).*\+', line, re.IGNORECASE):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "Evasive SQLi - Lambda taint tunnel",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} flows through lambda to SQL construction."
+                    )
+
+            # Stream reduce building query
+            if re.search(r'\.reduce\s*\(.*(?:SELECT|WHERE|AND|OR)', line, re.IGNORECASE):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    self._add_finding(
+                        i, "Evasive SQLi - Stream reduce SQL construction",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} accumulated via Stream.reduce() into SQL."
+                    )
+
+            # Supplier/Callable with SQL
+            if re.search(r'(?:Supplier|Callable).*(?:executeQuery|createQuery|createNativeQuery)', line):
+                context = '\n'.join(self.source_lines[max(0, i-5):i+1])
+                is_db, db_var, source = self._is_db_sourced(context)
+                if is_db:
+                    self._add_finding(
+                        i, "Evasive SQLi - Delayed execution wrapper",
+                        VulnCategory.SQL_INJECTION, Severity.HIGH, "MEDIUM", db_var,
+                        f"SQL execution wrapped in Supplier/Callable with entity value from {source}."
+                    )
+
+    def _check_array_varargs_injection(self):
+        """Detect taint hidden in array elements."""
+        for i, line in enumerate(self.source_lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+
+            # String.join with array containing entity values
+            if re.search(r'String\.join\s*\(', line):
+                context = '\n'.join(self.source_lines[max(0, i-10):i+1])
+                is_db, db_var, source = self._is_db_sourced(context)
+                if is_db and re.search(r'(?:SELECT|INSERT|UPDATE|DELETE|FROM|WHERE)', context, re.IGNORECASE):
+                    self._add_finding(
+                        i, "Evasive SQLi - String.join array injection",
+                        VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                        f"Entity value from {source} hidden in array, joined into SQL."
+                    )
+
+            # MessageFormat.format with entity values
+            if re.search(r'MessageFormat\.format\s*\(', line):
+                is_db, db_var, source = self._is_db_sourced(line)
+                if is_db:
+                    context = '\n'.join(self.source_lines[max(0, i-3):i+3])
+                    if re.search(r'(?:SELECT|INSERT|UPDATE|DELETE|FROM|WHERE)', context, re.IGNORECASE):
+                        self._add_finding(
+                            i, "Evasive SQLi - MessageFormat with entity value",
+                            VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", db_var,
+                            f"Entity value from {source} formatted into SQL via MessageFormat."
+                        )
 
 
 class PHPAnalyzer:
