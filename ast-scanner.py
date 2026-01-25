@@ -2030,10 +2030,11 @@ class JavaScriptAnalyzer:
                 # Skip this file entirely - it's a third-party library
                 return self.findings
 
-        # Also skip if file appears to be minified (very long lines, no newlines)
-        if len(self.source_lines) <= 5 and len(self.source_code) > 10000:
-            # Likely minified - skip to reduce noise
-            return self.findings
+        # Detect minified files and warn user
+        self._is_minified = self._detect_minified_file()
+        if self._is_minified:
+            print(f"  [!] MINIFIED FILE DETECTED: {os.path.basename(self.file_path)}")
+            print(f"      -> Minified files may produce MORE FALSE POSITIVES. Review findings carefully.")
 
         self._check_eval_injection()
         self._check_command_injection()
@@ -2072,6 +2073,52 @@ class JavaScriptAnalyzer:
             description=description,
         )
         self.findings.append(finding)
+
+    def _detect_minified_file(self) -> bool:
+        """
+        Detect if file is minified using multiple heuristics.
+        Returns True if file appears to be minified.
+        """
+        if not self.source_lines:
+            return False
+
+        # Heuristic 1: Very few lines but large file size
+        if len(self.source_lines) <= 10 and len(self.source_code) > 5000:
+            return True
+
+        # Heuristic 2: Average line length > 500 characters
+        total_length = sum(len(line) for line in self.source_lines)
+        avg_line_length = total_length / len(self.source_lines) if self.source_lines else 0
+        if avg_line_length > 500:
+            return True
+
+        # Heuristic 3: Any single line > 1000 characters (common in minified)
+        if any(len(line) > 1000 for line in self.source_lines):
+            return True
+
+        # Heuristic 4: High density of semicolons with minimal whitespace
+        # Minified code often has patterns like: };var a=1;function b(){};
+        sample = self.source_code[:5000]  # Check first 5KB
+        semicolons = sample.count(';')
+        newlines = sample.count('\n')
+        if semicolons > 50 and newlines < 20:
+            return True
+
+        # Heuristic 5: Filename patterns suggesting minified
+        import os
+        filename = os.path.basename(self.file_path).lower()
+        if '.min.' in filename or '-min.' in filename or filename.endswith('.min.js'):
+            return True
+
+        # Heuristic 6: Contains typical minified patterns (obfuscated variable names)
+        # Look for high frequency of single-letter variables like: a,b,c,d,e,f,g
+        if re.search(r'\b[a-z]\s*=\s*[a-z]\s*\(', sample) and re.search(r'\b[a-z]\s*,\s*[a-z]\s*,\s*[a-z]\b', sample):
+            # Multiple single-letter params and assignments
+            single_letter_vars = len(re.findall(r'\b[a-zA-Z]\s*[=,\(]', sample))
+            if single_letter_vars > 100:
+                return True
+
+        return False
 
     def _check_eval_injection(self):
         """Check for eval/Function constructor injection - including evasion techniques."""
@@ -2543,9 +2590,19 @@ class JavaScriptAnalyzer:
 
             # Template literals with SQL
             if re.search(rf'`[^`]*{sql_keywords}[^`]*\$\{{', line, re.IGNORECASE):
-                self._add_finding(i, "SQL Injection - Template literal",
-                                  VulnCategory.SQL_INJECTION, Severity.HIGH, "HIGH",
-                                  "SQL query uses template literal interpolation.")
+                # Exclude false positives: crypto operations, logging, string formatting
+                false_positive_patterns = [
+                    r'cipher\.|decipher\.|crypto\.',     # Crypto operations
+                    r'\.update\s*\([^)]*,\s*["\'](?:utf8|hex|base64)["\']',  # Cipher update
+                    r'\.final\s*\(["\'](?:hex|base64|utf8)["\']',  # Cipher final
+                    r'console\.|logger\.|log\.',         # Logging
+                    r'\.toString\s*\(',                  # Type conversion
+                ]
+                is_false_positive = any(re.search(pat, line, re.IGNORECASE) for pat in false_positive_patterns)
+                if not is_false_positive:
+                    self._add_finding(i, "SQL Injection - Template literal",
+                                      VulnCategory.SQL_INJECTION, Severity.HIGH, "HIGH",
+                                      "SQL query uses template literal interpolation.")
 
             # Tagged template literals (sql`...`)
             if re.search(rf'\bsql\s*`[^`]*{sql_keywords}', line, re.IGNORECASE):
@@ -3261,16 +3318,24 @@ class JavaScriptAnalyzer:
 
     def _check_nosql_injection(self):
         """Check for NoSQL injection patterns - including evasion techniques."""
-        patterns = [
+        # High confidence patterns - direct user input in query
+        high_confidence_patterns = [
             (r'\.find\s*\(\s*\{[^}]*:\s*req\.', "NoSQL Injection - MongoDB find with request"),
             (r'\.findOne\s*\(\s*\{[^}]*:\s*req\.', "NoSQL Injection - MongoDB findOne with request"),
-            (r'\$where\s*:', "NoSQL Injection - $where operator"),
+            (r'\$where\s*:\s*(?:req\.|user|input|\w+\s*\+)', "NoSQL Injection - $where with user input"),
             (r'\$regex\s*:\s*req\.', "NoSQL Injection - $regex with request data"),
             # Evasion: Dynamic object key from user input
             (r'query\s*\[\s*\w+\s*\]\s*=', "NoSQL Injection - Dynamic query key assignment"),
             (r'\[\s*field\s*\]\s*=|\[\s*operator\s*\]\s*=', "NoSQL Injection - Dynamic field/operator"),
-            # MongoDB operators
-            (r'\$(?:gt|gte|lt|lte|ne|in|nin|or|and|not|nor|exists|type|regex)\s*:', "NoSQL Injection - MongoDB operator"),
+        ]
+
+        # MongoDB operators - only flag if value is NOT a hardcoded literal
+        # Pattern: $ne: <something> where <something> is not true/false/null/number/string literal
+        operator_with_taint_patterns = [
+            # $operator: variable (not literal)
+            (r'\$(?:gt|gte|lt|lte|ne|in|nin)\s*:\s*(?:req\.|user\.|input\.|body\.|query\.|params\.)', "NoSQL Injection - MongoDB operator with user input"),
+            # $operator: variable name (check if tainted)
+            (r'\$(?:gt|gte|lt|lte|ne|in|nin)\s*:\s*([a-zA-Z_]\w*)\s*[,}\]]', "NoSQL Injection - MongoDB operator with variable"),
         ]
 
         # Evasion patterns that use template literals or computed keys
@@ -3285,18 +3350,36 @@ class JavaScriptAnalyzer:
             (r'(?:const|let|var)\s+\w+\s*=\s*["\']?\$(?:ne|gt|gte|lt|lte|in|nin|or|and|not|regex)', "NoSQL Injection - MongoDB operator in variable"),
         ]
 
+        # Safe literal patterns - these are NOT injection
+        safe_value_pattern = re.compile(r'\$(?:gt|gte|lt|lte|ne|in|nin|or|and|not|nor|exists|type)\s*:\s*(?:true|false|null|undefined|\d+|["\'][^"\']*["\']|\[[\s\d,"\'-]*\])\s*[,}\]]')
+
         for i, line in enumerate(self.source_lines, 1):
             stripped = line.strip()
             if stripped.startswith('//') or stripped.startswith('/*'):
                 continue
 
-            for pattern, vuln_name in patterns:
+            # High confidence patterns - always flag
+            for pattern, vuln_name in high_confidence_patterns:
                 if re.search(pattern, line):
-                    # Check context for query building
-                    context = '\n'.join(self.source_lines[max(0, i-3):min(len(self.source_lines), i+2)])
-                    has_query_context = re.search(r'query|find|collection|\.db\.|mongo', context, re.IGNORECASE)
+                    self._add_finding(i, vuln_name,
+                                      VulnCategory.NOSQL_INJECTION, Severity.HIGH, "HIGH",
+                                      "Potential NoSQL injection vulnerability.")
 
-                    if has_query_context or 'query' in line.lower():
+            # Operator patterns - check if value is tainted, not hardcoded
+            for pattern, vuln_name in operator_with_taint_patterns:
+                match = re.search(pattern, line)
+                if match:
+                    # Skip if value is a safe literal
+                    if safe_value_pattern.search(line):
+                        continue
+                    # Check if the variable (if captured) is tainted
+                    if match.lastindex and match.lastindex >= 1:
+                        var_name = match.group(1)
+                        if var_name in self.tainted_vars:
+                            self._add_finding(i, vuln_name,
+                                              VulnCategory.NOSQL_INJECTION, Severity.HIGH, "HIGH",
+                                              f"MongoDB operator with tainted variable '{var_name}'.")
+                    else:
                         self._add_finding(i, vuln_name,
                                           VulnCategory.NOSQL_INJECTION, Severity.HIGH, "HIGH",
                                           "Potential NoSQL injection vulnerability.")
