@@ -273,11 +273,13 @@ db.Products.FromSqlRaw(
 - **Confidence Scoring** - HIGH/MEDIUM/LOW ratings
 - **Minified File Detection** - Warns about potential false positives
 - **False Positive Reduction** - Recognizes safe patterns:
-  - Parameterized queries (prepared statements)
+  - Parameterized queries (`:param`, `?`, `%s` placeholders)
+  - SQLAlchemy bound parameters with `execute(query, params)`
   - Input sanitization (`escapeshellarg`, `escapeshellcmd`)
   - Allowlist validation before dangerous operations
   - Safe deserialization options (`allowed_classes`)
   - Static/hardcoded values (no user input)
+  - String literals excluded from taint matching
 
 </td>
 <td width="50%">

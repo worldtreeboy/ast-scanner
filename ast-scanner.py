@@ -1117,13 +1117,29 @@ class PythonTaintTracker(ast.NodeVisitor):
                 # Check for string concatenation/formatting in query
                 is_dynamic = self._is_dynamic_string(first_arg)
 
-                if tainted:
+                # Check if using parameterized query with placeholders
+                # SQLAlchemy uses :param style, sqlite3/psycopg2 uses ? or %s
+                is_parameterized = False
+                has_params = len(node.args) >= 2 or any(kw.arg in ('parameters', 'params') for kw in node.keywords)
+
+                # Check if the query string contains placeholders
+                query_line = self.get_line_content(node.lineno)
+                # Look in context for the query definition
+                context_start = max(0, node.lineno - 10)
+                context_lines = self.source_lines[context_start:node.lineno]
+                context = '\n'.join(context_lines)
+
+                # Check for :param, ?, or %(name)s style placeholders in context
+                if has_params and re.search(r':\w+|(?<![%\w])\?(?!\w)|%\(\w+\)s|%s', context):
+                    is_parameterized = True
+
+                if tainted and not is_parameterized:
                     self.add_finding(
                         node, "SQL Injection - execute() with tainted query",
                         VulnCategory.SQL_INJECTION, Severity.CRITICAL, "HIGH", source,
                         "User-controlled data used in SQL query without parameterization."
                     )
-                elif is_dynamic:
+                elif is_dynamic and not is_parameterized:
                     # Check if using parameterized query (has second argument)
                     if len(node.args) < 2 or self._is_tainted_in_args(node.args[1:]):
                         self.add_finding(
@@ -4136,8 +4152,11 @@ class JavaAnalyzer:
         else:
             rhs = line
 
+        # Remove string literals to avoid matching variable names inside strings
+        rhs_without_strings = re.sub(r'"[^"\\]*(?:\\.[^"\\]*)*"', '""', rhs)
+
         for var_name in self.tainted_vars:
-            if re.search(rf'\b{re.escape(var_name)}\b', rhs):
+            if re.search(rf'\b{re.escape(var_name)}\b', rhs_without_strings):
                 return True, var_name
         return False, None
 
@@ -5633,11 +5652,15 @@ class PHPAnalyzer:
         return False, None, None
 
     def _is_tainted(self, line: str) -> Tuple[bool, Optional[str]]:
+        # Remove string literals (but keep $var interpolation in double-quoted strings)
+        # Only strip single-quoted strings which don't interpolate in PHP
+        line_clean = re.sub(r"'[^'\\]*(?:\\.[^'\\]*)*'", "''", line)
+
         for var in self.tainted_vars:
-            if re.search(rf'\${re.escape(var)}\b', line):
+            if re.search(rf'\${re.escape(var)}\b', line_clean):
                 return True, var
         # Check direct superglobal use
-        if re.search(r'\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[', line):
+        if re.search(r'\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[', line_clean):
             return True, '$_REQUEST'
         return False, None
 
@@ -6673,14 +6696,19 @@ class CSharpAnalyzer:
         return False, None, None
 
     def _is_tainted(self, line: str) -> Tuple[bool, Optional[str]]:
+        # Remove string literals from the line to avoid matching variable names inside strings
+        # This prevents matching 'cmd' inside "cmd.exe" or similar
+        line_without_strings = re.sub(r'"[^"\\]*(?:\\.[^"\\]*)*"', '""', line)
+        line_without_strings = re.sub(r"'[^'\\]*(?:\\.[^'\\]*)*'", "''", line_without_strings)
+
         for var in self.tainted_vars:
-            if re.search(rf'\b{re.escape(var)}\b', line):
+            if re.search(rf'\b{re.escape(var)}\b', line_without_strings):
                 return True, var
         # Check tainted fields (from constructor parameter flow)
         for field in self.tainted_fields:
-            if re.search(rf'\b{re.escape(field)}\b', line):
+            if re.search(rf'\b{re.escape(field)}\b', line_without_strings):
                 return True, field
-        if re.search(r'Request\s*[\[.]', line):
+        if re.search(r'Request\s*[\[.]', line_without_strings):
             return True, 'Request'
         return False, None
 
@@ -7769,8 +7797,12 @@ class GoAnalyzer:
                         break
 
     def _is_tainted(self, line: str) -> Tuple[bool, Optional[str]]:
+        # Remove string literals to avoid matching variable names inside strings
+        line_clean = re.sub(r'"[^"\\]*(?:\\.[^"\\]*)*"', '""', line)
+        line_clean = re.sub(r'`[^`]*`', '``', line_clean)  # Go raw strings
+
         for var in self.tainted_vars:
-            if re.search(rf'\b{re.escape(var)}\b', line):
+            if re.search(rf'\b{re.escape(var)}\b', line_clean):
                 return True, var
         return False, None
 
@@ -8016,10 +8048,14 @@ class RubyAnalyzer:
         return False, None, None
 
     def _is_tainted(self, line: str) -> Tuple[bool, Optional[str]]:
+        # Remove string literals to avoid matching variable names inside strings
+        # Preserve #{...} interpolation inside double-quoted strings
+        line_clean = re.sub(r"'[^'\\]*(?:\\.[^'\\]*)*'", "''", line)
+
         for var in self.tainted_vars:
-            if re.search(rf'\b{re.escape(var)}\b', line):
+            if re.search(rf'\b{re.escape(var)}\b', line_clean):
                 return True, var
-        if re.search(r'\bparams\s*\[', line):
+        if re.search(r'\bparams\s*\[', line_clean):
             return True, 'params'
         return False, None
 
