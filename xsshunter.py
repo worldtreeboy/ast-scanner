@@ -2026,11 +2026,72 @@ class XSSHunter:
     def should_skip_file(self, file_path: str) -> bool:
         """Skip minified, vendor, and build files."""
         skip_patterns = [
-            'node_modules', 'vendor', 'dist/', 'build/', '.min.js',
+            'node_modules', 'vendor', 'dist/', 'build/',
             'bundle.js', 'chunk.', '.bundle.', 'polyfill', '.map'
         ]
         path_lower = file_path.lower()
         return any(p in path_lower for p in skip_patterns)
+
+    def _detect_minified_file(self, content: str, file_path: str) -> bool:
+        """
+        Detect if file is minified/obfuscated using multiple heuristics.
+        Returns True if file appears to be minified.
+        """
+        if not content:
+            return False
+
+        lines = content.split('\n')
+        total_lines = len(lines)
+
+        # Heuristic 1: Very few lines with large file size
+        if total_lines < 10 and len(content) > 5000:
+            return True
+
+        # Heuristic 2: Average line length > 500 characters
+        non_empty_lines = [l for l in lines if l.strip()]
+        if non_empty_lines:
+            avg_line_length = sum(len(l) for l in non_empty_lines) / len(non_empty_lines)
+            if avg_line_length > 500:
+                return True
+
+        # Heuristic 3: Any single line > 1000 characters (common in minified)
+        if any(len(line) > 1000 for line in lines):
+            return True
+
+        # Heuristic 4: High density of semicolons with minimal newlines
+        sample = content[:5000]
+        semicolons = sample.count(';')
+        newlines = sample.count('\n')
+        if semicolons > 50 and newlines < 20:
+            return True
+
+        # Heuristic 5: Filename patterns suggesting minified
+        filename = os.path.basename(file_path).lower()
+        if '.min.' in filename or '-min.' in filename or filename.endswith('.min.js'):
+            return True
+
+        # Heuristic 6: Contains typical minified patterns (obfuscated variable names)
+        # Look for high frequency of single-letter variables like: a,b,c,d,e,f,g
+        if re.search(r'\b[a-z]\s*=\s*[a-z]\s*\(', sample) and re.search(r'\b[a-z]\s*,\s*[a-z]\s*,\s*[a-z]\b', sample):
+            # Multiple single-letter params and assignments
+            if re.search(r'function\s*\([a-z](,[a-z]){3,}', sample):
+                return True
+
+        return False
+
+    def _display_minified_warning(self, file_path: str) -> None:
+        """Display warning banner for minified/obfuscated files."""
+        filename = os.path.basename(file_path)
+        print("")
+        print("  ╔══════════════════════════════════════════════════════════════════════════════╗")
+        print("  ║  ⚠️  MINIFIED/OBFUSCATED FILE DETECTED                                        ║")
+        print(f"  ║  File: {filename:<69} ║")
+        print("  ║                                                                              ║")
+        print("  ║  WARNING: Minified files may produce MORE FALSE POSITIVES.                  ║")
+        print("  ║  Findings from this file should be reviewed carefully.                      ║")
+        print("  ║  Consider scanning the original source files instead.                       ║")
+        print("  ╚══════════════════════════════════════════════════════════════════════════════╝")
+        print("")
 
     def read_file(self, file_path: str) -> Optional[str]:
         """Read file with encoding handling."""
@@ -2155,7 +2216,11 @@ class XSSHunter:
         self.files_scanned += 1
         self.log(f"Scanning: {file_path}")
 
+        # Check for minified/obfuscated file and display warning
         ext = Path(file_path).suffix.lower()
+        if ext in {'.js', '.jsx', '.mjs'}:
+            if self._detect_minified_file(content, file_path):
+                self._display_minified_warning(file_path)
 
         if ext in {'.js', '.jsx', '.mjs'}:
             self.scan_js_file(file_path, content)
