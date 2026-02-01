@@ -1,12 +1,12 @@
 <h1 align="center">
   <br>
   <pre>
- █████╗ ███████╗████████╗    ███████╗ ██████╗ █████╗ ███╗   ██╗███╗   ██╗███████╗██████╗
-██╔══██╗██╔════╝╚══██╔══╝    ██╔════╝██╔════╝██╔══██╗████╗  ██║████╗  ██║██╔════╝██╔══██╗
-███████║███████╗   ██║       ███████╗██║     ███████║██╔██╗ ██║██╔██╗ ██║█████╗  ██████╔╝
-██╔══██║╚════██║   ██║       ╚════██║██║     ██╔══██║██║╚██╗██║██║╚██╗██║██╔══╝  ██╔══██╗
-██║  ██║███████║   ██║       ███████║╚██████╗██║  ██║██║ ╚████║██║ ╚████║███████╗██║  ██║
-╚═╝  ╚═╝╚══════╝   ╚═╝       ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝
+██╗   ██╗██╗   ██╗██╗     ███╗   ██╗██╗  ██╗██╗   ██╗███╗   ██╗████████╗███████╗██████╗
+██║   ██║██║   ██║██║     ████╗  ██║██║  ██║██║   ██║████╗  ██║╚══██╔══╝██╔════╝██╔══██╗
+██║   ██║██║   ██║██║     ██╔██╗ ██║███████║██║   ██║██╔██╗ ██║   ██║   █████╗  ██████╔╝
+╚██╗ ██╔╝██║   ██║██║     ██║╚██╗██║██╔══██║██║   ██║██║╚██╗██║   ██║   ██╔══╝  ██╔══██╗
+ ╚████╔╝ ╚██████╔╝███████╗██║ ╚████║██║  ██║╚██████╔╝██║ ╚████║   ██║   ███████╗██║  ██║
+  ╚═══╝   ╚═════╝ ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
   </pre>
 </h1>
 
@@ -349,20 +349,20 @@ The scanner has been validated against comprehensive test suites covering all vu
 
 ```bash
 # Clone (rename repo on GitHub: Settings → Repository name)
-git clone https://github.com/worldtreeboy/ast-scanner.git
-cd ast-scanner
+git clone https://github.com/worldtreeboy/vulnhunter.git
+cd vulnhunter
 
 # Scan a project (no dependencies required!)
-python3 ast-scanner.py /path/to/project
+python3 vulnhunter.py /path/to/project
 
 # Scan single file
-python3 ast-scanner.py vulnerable_app.java
+python3 vulnhunter.py vulnerable_app.java
 
 # JSON output for CI/CD
-python3 ast-scanner.py project/ --output json -o report.json
+python3 vulnhunter.py project/ --output json -o report.json
 
 # High-confidence only
-python3 ast-scanner.py project/ --min-confidence HIGH
+python3 vulnhunter.py project/ --min-confidence HIGH
 ```
 
 ---
@@ -605,7 +605,7 @@ When the scanner detects a minified JavaScript file, it displays a prominent war
 ## CLI Reference
 
 ```bash
-usage: ast-scanner.py [-h] [-v] [--output {text,json}]
+usage: vulnhunter.py [-h] [-v] [--output {text,json}]
                       [-o FILE] [--min-confidence {HIGH,MEDIUM,LOW}]
                       [--scan-all] target
 
@@ -630,7 +630,7 @@ options:
 ```yaml
 - name: Security Scan
   run: |
-    python3 ast-scanner.py . --min-confidence HIGH --output json -o results.json
+    python3 vulnhunter.py . --min-confidence HIGH --output json -o results.json
     if grep -q '"severity": "CRITICAL"' results.json; then
       echo "::error::Critical vulnerabilities found!"
       exit 1
@@ -641,17 +641,141 @@ options:
 
 ```bash
 #!/bin/bash
-python3 ast-scanner.py . --min-confidence HIGH
+python3 vulnhunter.py . --min-confidence HIGH
 [ $? -ne 0 ] && echo "Security issues found!" && exit 1
 ```
+
+---
+
+## XSSHunter - XSS & Prototype Pollution Scanner
+
+**xsshunter.py** is a specialized AST-based scanner for detecting XSS and Prototype Pollution vulnerabilities in JavaScript (ES6+) and Node.js/Express.js applications.
+
+### Features
+
+| Feature | Description |
+|---------|-------------|
+| **ES6+ Support** | Full ES6 syntax support via `esprima` (const, let, arrow functions, destructuring, template literals, spread operator) |
+| **Taint Tracking** | Source-to-sink data flow analysis across variable assignments, function calls, and transformations |
+| **Express.js Detection** | Detects XSS through `req.query`, `req.body`, `req.params` → `res.send()`, `res.render()` |
+| **Prototype Pollution** | For-in loops, Object.assign, spread operator, Object.defineProperty, function parameters |
+| **Encoding Bypass Detection** | Tracks taint through toString, join, split, map, filter, reduce, and other transformations |
+
+### Installation
+
+```bash
+pip3 install esprima        # Recommended: ES6+ support
+pip3 install pyjsparser     # Fallback: ES5 only
+```
+
+### Usage
+
+```bash
+# Scan JavaScript file
+python3 xsshunter.py app.js
+
+# Scan Express.js project
+python3 xsshunter.py /path/to/express/app --verbose
+
+# JSON output
+python3 xsshunter.py src/ --output json -o xss-report.json
+
+# Include medium/low confidence
+python3 xsshunter.py src/ --min-confidence MEDIUM
+```
+
+### Detection Categories
+
+#### XSS Detection
+
+| Source Type | Examples |
+|-------------|----------|
+| **URL Sources** | `location.hash`, `location.search`, `document.URL`, `document.referrer` |
+| **Express.js** | `req.query.*`, `req.body.*`, `req.params.*`, `req.headers`, `req.cookies` |
+| **User Input** | `URLSearchParams.get()`, `event.data` (postMessage), `.value` (form inputs) |
+| **Storage** | `localStorage.getItem()`, `sessionStorage.getItem()` |
+
+| Sink Type | Examples |
+|-----------|----------|
+| **DOM XSS** | `innerHTML`, `outerHTML`, `document.write()`, `insertAdjacentHTML()` |
+| **Eval Sinks** | `eval()`, `new Function()`, `setTimeout(string)`, `setInterval(string)` |
+| **Express.js** | `res.send()`, `res.write()`, `res.end()`, `res.render()` |
+| **jQuery** | `.html()`, `.append()`, `.prepend()`, `.after()`, `.before()` |
+
+#### Prototype Pollution Detection
+
+| Pattern | Example |
+|---------|---------|
+| **For-in Loop** | `for (key in userObj) { target[key] = userObj[key] }` |
+| **Spread Operator** | `const merged = { ...req.body }` |
+| **Object.assign** | `Object.assign({}, JSON.parse(userInput))` |
+| **Object.assign to __proto__** | `Object.assign(obj.__proto__, data)` |
+| **Object.defineProperty** | `Object.defineProperty(obj.__proto__, key, desc)` |
+| **Function Parameters** | `function set(obj, key, val) { obj[key] = val }` |
+| **Dynamic Method Call** | `obj[userInput]()` |
+| **Lodash/jQuery Merge** | `_.merge()`, `_.defaultsDeep()`, `$.extend(true, ...)` |
+
+#### Advanced Patterns
+
+| Pattern | Detection |
+|---------|-----------|
+| **ES6 Destructuring** | `const { q } = req.query` → taint tracked to `q` |
+| **Tagged Templates** | `` customTag`...${tainted}` `` → XSS if tag outputs to DOM |
+| **Array Method Flow** | `arr.map().join()` → taint propagates through chain |
+| **Logical Operators** | `val \|\| default` → taint preserved |
+| **Template Literals** | `` `<div>${userInput}</div>` `` → detected in res.send() |
+
+### Example Output
+
+```
+======================================================================
+XSSHunter Scan Report (AST-Based Analysis)
+======================================================================
+Files Scanned: 15
+Vulnerabilities Found: 8
+
+[1] Prototype Pollution via Object.assign() to __proto__
+    File: api.js:15:8
+    Severity: CRITICAL
+    Description: Object.assign() directly modifying __proto__ with tainted data
+    Source: req.body
+    Sink: Object.assign(__proto__, ...)
+    Remediation: Never use __proto__ as Object.assign target
+
+[2] Reflected XSS via send()
+    File: routes.js:42:4
+    Severity: HIGH
+    Description: Tainted data from 'express_query' reflected in HTTP response
+    Source: req.query.name
+    Sink: res.send()
+    Remediation: Escape HTML entities or use res.json()
+
+[3] XSS via Tagged Template Literal
+    File: logger.js:27:0
+    Severity: HIGH
+    Description: Tainted data passed to tagged template function
+    Source: URLSearchParams.get()
+    Sink: customLogger`...`
+    Remediation: Ensure tag function sanitizes interpolated values
+```
+
+### Test Coverage
+
+| Test File | Patterns | Findings |
+|-----------|----------|----------|
+| `nodejs-express-tests.js` | Express.js XSS & PP | 36 |
+| `advanced-express-tests.js` | ES6 destructuring, arrays, WebSocket | 34 |
+| `edge-cases-tests.js` | Multi-hop taint, closures, async | 22 |
+| `encoding-bypass-tests.js` | toString, Base64, URL encoding | 35 |
 
 ---
 
 ## Project Structure
 
 ```
-ast-scanner/
-├── ast-scanner.py          # Main scanner engine
+vulnhunter/
+├── vulnhunter.py          # Multi-language SAST scanner
+├── xsshunter.py           # Specialized XSS/Prototype Pollution scanner
 ├── README.md
 ├── LICENSE
 └── test-files/
@@ -667,6 +791,8 @@ ast-scanner/
     ├── vulnerability-tests-go.go         # Go/GORM tests
     ├── 2nd-order-*.java/php              # 2nd-order injection tests
     ├── evasive-*.js/py/php               # Evasion technique tests
+    ├── xss-tests.js                      # XSSHunter JavaScript test cases
+    ├── xss-tests.html                    # XSSHunter HTML test cases
     └── ...
 ```
 

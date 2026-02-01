@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>XSSHunter HTML Test Cases</title>
+    <!--
+    XSSHunter Test Cases - HTML
+    ============================
+    This file contains test cases for Reflected XSS and template injection detection.
+
+    Naming Convention:
+    - [TP] = True Positive - SHOULD be detected as vulnerable
+    - [FP] = False Positive - Should NOT be detected (safe code)
+    -->
+</head>
+<body>
+
+<!-- ================================================================== -->
+<!-- Reflected XSS - Template Injection Patterns                        -->
+<!-- ================================================================== -->
+
+<!-- [TP-HTML-001] Handlebars unescaped output -->
+<div class="user-content">
+    {{{ userInput }}}
+</div>
+
+<!-- [TP-HTML-002] EJS unescaped output -->
+<div class="ejs-content">
+    <%- rawHtml %>
+</div>
+
+<!-- [TP-HTML-003] EJS potentially unsafe -->
+<div class="ejs-escaped">
+    <%= userData %>
+</div>
+
+<!-- [FP-HTML-001] Handlebars escaped output - SAFE -->
+<div class="safe-content">
+    {{ safeData }}
+</div>
+
+<!-- ================================================================== -->
+<!-- Reflected XSS - JavaScript URL Schemes                             -->
+<!-- ================================================================== -->
+
+<!-- [TP-HTML-004] javascript: in href -->
+<a href="javascript:alert(1)">Click me</a>
+
+<!-- [TP-HTML-005] Dynamic href with template -->
+<a href="{{ userUrl }}">Dynamic Link</a>
+
+<!-- [TP-HTML-006] Dynamic src with template -->
+<img src="{{ userImageUrl }}" alt="User image">
+
+<!-- [FP-HTML-002] Static javascript: void - SAFE pattern -->
+<a href="javascript:void(0)" onclick="handleClick()">Safe void link</a>
+
+<!-- ================================================================== -->
+<!-- Inline Script with Template Variables                              -->
+<!-- ================================================================== -->
+
+<!-- [TP-HTML-007] PHP echo in script context -->
+<script>
+    var userData = '<?php echo $userInput; ?>';
+    document.write(userData);
+</script>
+
+<!-- [TP-HTML-008] Template variable in script -->
+<script>
+    var config = {
+        name: '{{ userName }}',
+        redirect: '{{ redirectUrl }}'
+    };
+    if (config.redirect) {
+        location.href = config.redirect;
+    }
+</script>
+
+<!-- [TP-HTML-009] Direct URL reflection -->
+<script>
+    document.write(location.search);
+</script>
+
+<!-- [TP-HTML-010] document.URL reflection -->
+<script>
+    var url = document.URL;
+    document.body.innerHTML = url;
+</script>
+
+<!-- ================================================================== -->
+<!-- Event Handler Injection                                            -->
+<!-- ================================================================== -->
+
+<!-- [TP-HTML-011] Template in event handler -->
+<button onclick="{{ userAction }}">Click</button>
+
+<!-- [TP-HTML-012] EJS in event handler -->
+<button onclick="<%= callback %>">Action</button>
+
+<!-- [TP-HTML-013] Dynamic event handler -->
+<div onmouseover="handleHover('{{ userId }}')">Hover me</div>
+
+<!-- [FP-HTML-003] Static event handler - SAFE -->
+<button onclick="submitForm()">Submit</button>
+
+<!-- ================================================================== -->
+<!-- DOM XSS in Inline Scripts                                          -->
+<!-- ================================================================== -->
+
+<!-- [TP-HTML-014] innerHTML with location.hash -->
+<script>
+    document.getElementById('content').innerHTML = location.hash.slice(1);
+</script>
+
+<!-- [TP-HTML-015] innerHTML with URLSearchParams -->
+<script>
+    const params = new URLSearchParams(location.search);
+    const name = params.get('name');
+    document.getElementById('greeting').innerHTML = 'Hello, ' + name;
+</script>
+
+<!-- [TP-HTML-016] eval with hash -->
+<script>
+    var code = location.hash.substring(1);
+    eval(code);
+</script>
+
+<!-- [TP-HTML-017] jQuery html() with user input -->
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script>
+    $(document).ready(function() {
+        var content = location.hash.slice(1);
+        $('#output').html(content);
+    });
+</script>
+
+<!-- [FP-HTML-004] Using textContent - SAFE -->
+<script>
+    var userInput = location.hash.slice(1);
+    document.getElementById('safe-output').textContent = userInput;
+</script>
+
+<!-- [FP-HTML-005] Sanitized innerHTML - SAFE -->
+<script>
+    var userInput = location.hash.slice(1);
+    document.getElementById('sanitized').innerHTML = DOMPurify.sanitize(userInput);
+</script>
+
+<!-- ================================================================== -->
+<!-- Attribute Injection                                                -->
+<!-- ================================================================== -->
+
+<!-- [TP-HTML-018] Attribute injection via template -->
+<div id="{{ userId }}" class="user-{{ userClass }}">
+    Content
+</div>
+
+<!-- [TP-HTML-019] Style attribute injection -->
+<div style="background: {{ userColor }}">Styled div</div>
+
+<!-- ================================================================== -->
+<!-- PostMessage Handler                                                -->
+<!-- ================================================================== -->
+
+<!-- [TP-HTML-020] Unsafe postMessage handler -->
+<script>
+    window.addEventListener('message', function(event) {
+        // No origin check!
+        document.body.innerHTML = event.data;
+    });
+</script>
+
+<!-- [FP-HTML-006] Safe postMessage with origin check -->
+<script>
+    window.addEventListener('message', function(event) {
+        if (event.origin !== 'https://trusted-domain.com') {
+            return;
+        }
+        document.getElementById('message').textContent = event.data;
+    });
+</script>
+
+<!-- ================================================================== -->
+<!-- Form-based XSS                                                     -->
+<!-- ================================================================== -->
+
+<!-- [TP-HTML-021] Form action from URL parameter -->
+<script>
+    var formAction = new URLSearchParams(location.search).get('action');
+    document.getElementById('myForm').action = formAction;
+</script>
+
+<form id="myForm" method="POST">
+    <input type="text" name="data">
+    <button type="submit">Submit</button>
+</form>
+
+<!-- ================================================================== -->
+<!-- Storage-based XSS                                                  -->
+<!-- ================================================================== -->
+
+<!-- [TP-HTML-022] localStorage to innerHTML -->
+<script>
+    var savedHtml = localStorage.getItem('userContent');
+    document.getElementById('saved-content').innerHTML = savedHtml;
+</script>
+
+<!-- [TP-HTML-023] sessionStorage to innerHTML -->
+<script>
+    var sessionData = sessionStorage.getItem('data');
+    document.body.innerHTML = sessionData;
+</script>
+
+<!-- ================================================================== -->
+<!-- Prototype Pollution in HTML                                        -->
+<!-- ================================================================== -->
+
+<!-- [TP-HTML-024] __proto__ in inline script -->
+<script>
+    var userConfig = JSON.parse(localStorage.getItem('config'));
+    for (var key in userConfig) {
+        window.appConfig[key] = userConfig[key]; // Vulnerable if key is __proto__
+    }
+</script>
+
+<!-- [TP-HTML-025] Lodash merge in HTML -->
+<script>
+    var defaults = { theme: 'light' };
+    var userPrefs = JSON.parse(location.hash.slice(1));
+    _.merge(defaults, userPrefs);
+</script>
+
+<!-- ================================================================== -->
+<!-- Vue.js Patterns                                                    -->
+<!-- ================================================================== -->
+
+<!-- [TP-HTML-026] Vue v-html directive -->
+<div id="vue-app">
+    <div v-html="userContent"></div>
+</div>
+
+<!-- [FP-HTML-007] Vue v-text directive - SAFE -->
+<div id="vue-safe">
+    <div v-text="userContent"></div>
+</div>
+
+<!-- ================================================================== -->
+<!-- Angular Patterns                                                   -->
+<!-- ================================================================== -->
+
+<!-- [TP-HTML-027] Angular innerHTML binding -->
+<div [innerHTML]="userHtml"></div>
+
+<!-- [TP-HTML-028] Angular bypass security -->
+<script>
+    // In Angular component
+    this.sanitizer.bypassSecurityTrustHtml(userInput);
+</script>
+
+<!-- ================================================================== -->
+<!-- iframe Injection                                                   -->
+<!-- ================================================================== -->
+
+<!-- [TP-HTML-029] iframe srcdoc injection -->
+<script>
+    var content = location.hash.slice(1);
+    document.getElementById('frame').srcdoc = content;
+</script>
+
+<!-- [TP-HTML-030] iframe src from user input -->
+<script>
+    var frameUrl = new URLSearchParams(location.search).get('url');
+    document.getElementById('embed-frame').src = frameUrl;
+</script>
+
+<!-- Output containers for testing -->
+<div id="content"></div>
+<div id="greeting"></div>
+<div id="output"></div>
+<div id="safe-output"></div>
+<div id="sanitized"></div>
+<div id="message"></div>
+<div id="saved-content"></div>
+<iframe id="frame"></iframe>
+<iframe id="embed-frame"></iframe>
+
+</body>
+</html>

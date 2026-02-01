@@ -8819,14 +8819,14 @@ class ASTScanner:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='AST-Based Vulnerability Scanner - Reduces false positives through code analysis',
+        description='VulnHunter - Multi-Language SAST with 2nd-Order Injection Detection',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent('''
             Examples:
-              python3 ast-scanner.py /path/to/project
-              python3 ast-scanner.py app.py --verbose
-              python3 ast-scanner.py /path/to/project --output json -o report.json
-              python3 ast-scanner.py /path/to/project --min-confidence HIGH
+              python3 vulnhunter.py /path/to/project
+              python3 vulnhunter.py app.py --verbose
+              python3 vulnhunter.py /path/to/project --output json -o report.json
+              python3 vulnhunter.py /path/to/project --min-confidence HIGH
         ''')
     )
 
