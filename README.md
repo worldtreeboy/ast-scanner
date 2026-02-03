@@ -865,7 +865,7 @@ python3 java-treesitter.py src/ --min-severity CRITICAL
 | Command Injection | Excellent | — | Reflection `getMethod("exec")` | Method invocation tree + arg taint |
 | Code Injection | Excellent | — | SpEL, OGNL, MVEL, EL | Receiver-aware `eval()` dispatch |
 | JNDI Injection | Excellent | — | — | `lookup()` arg taint (Log4Shell) |
-| Deserialization | Excellent | — | SnakeYAML, XStream | Stream source tracking + `ValidatingObjectInputStream` FP skip |
+| Deserialization | Excellent | — | SnakeYAML, XStream | Stream source tracking + `ValidatingObjectInputStream` FP skip + receiver-aware `load()` |
 | SSRF | Excellent | — | — | URL/HttpClient/RestTemplate/WebClient/OkHttp arg taint |
 | XXE | Excellent | — | — | Per-variable secure config tracking (`setFeature`/`setProperty`) |
 | XPath Injection | Excellent | — | StringBuilder | Receiver-aware `evaluate()`/`compile()` + concat detection |
@@ -873,7 +873,7 @@ python3 java-treesitter.py src/ --min-severity CRITICAL
 | IDOR | Excellent | — | EntityManager, Hibernate session | `findById`/`em.find`/`session.get` + ownership check scan |
 | MFLAC | Excellent | — | Auth-only vs role-based | AST annotation walk — `@PreAuthorize`/`@Secured`/`@RolesAllowed` value analysis |
 | Mass Assignment | Good | — | — | `@RequestBody` → `save()`/`update()` without DTO |
-| NoSQL Injection | Good | — | — | `Document.parse()` / `$where` arg taint |
+| NoSQL Injection | Excellent | — | — | Receiver-checked `Document.parse()` / `$where` arg taint |
 | Reflection Injection | Good | — | — | `Class.forName()` + `getMethod` arg taint |
 | Second-order SQLi | — | DB-entity → raw SQL | — | `db_sourced` set propagation to SQL sinks |
 
@@ -900,11 +900,15 @@ The scanner performs **per-method taint analysis** — taint is scoped to indivi
 - Secure XML parser config (`setFeature(DISALLOW_DOCTYPE)`) tracked per variable
 - Ownership checks in IDOR (`currentUser.getId().equals()`, `SecurityContextHolder`)
 - Inline role checks in MFLAC (`hasRole("ADMIN")`, `getRoles().contains()`)
+- `DocumentBuilder.parse()` excluded from NoSQL `Document.parse()` rule (receiver-checked)
+- Hibernate `session.load()` excluded from SnakeYAML `load()` rule (receiver-checked)
+- Fully-qualified `org.yaml.snakeyaml.Yaml(new ...SafeConstructor())` recognized as safe
 
 ### Test Results
 
 | Test File | Findings | Categories |
 |-----------|:--------:|:-----------|
+| comprehensive-vuln-tests.java | 71 | All 15 categories — 61 TP, 8 FN caught, 2 known FP |
 | vulnerability-tests-java.java | 29 | SQL, Command, Code, XPath, XXE, SSRF, SSTI, Deserialization, IDOR |
 | vulnerability-tests-spring.java | 49 | All 15 categories including MFLAC, Mass Assignment, 2nd-order |
 | idor-mflac-comprehensive-java.java | 10 | IDOR (5 patterns), MFLAC (3 patterns) |

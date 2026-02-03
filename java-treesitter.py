@@ -848,11 +848,14 @@ class JavaASTAnalyzer:
 
             # SnakeYAML: yaml.load(tainted)
             if called == "load" and tracker.is_tainted(mi_text):
-                # Check if constructor uses SafeConstructor
+                # Check receiver is a YAML object, not Hibernate session/other
                 receiver = self._get_receiver(mi)
                 if receiver:
                     recv_name = node_text(receiver)
-                    if not self._has_safe_constructor(recv_name, body):
+                    # Skip if receiver is clearly a Hibernate/JPA session
+                    if re.search(r'(?i)session|entityManager|em\b|hibernate', recv_name):
+                        pass  # Not a YAML load
+                    elif not self._has_safe_constructor(recv_name, body):
                         self._add_finding(
                             line, 0,
                             "Insecure Deserialization - SnakeYAML without SafeConstructor",
@@ -937,8 +940,8 @@ class JavaASTAnalyzer:
     def _has_safe_constructor(self, yaml_var: str, body: Node) -> bool:
         """Check if a Yaml instance uses SafeConstructor."""
         body_text = node_text(body)
-        # Pattern: new Yaml(new SafeConstructor())
-        return bool(re.search(r'new\s+Yaml\s*\(\s*new\s+SafeConstructor', body_text))
+        # Pattern: new Yaml(new SafeConstructor()) or fully-qualified variants
+        return bool(re.search(r'new\s+(?:[\w.]*\.)?Yaml\s*\(\s*new\s+(?:[\w.]*\.)?SafeConstructor', body_text))
 
     def _has_xstream_security(self, xstream_var: str, body: Node) -> bool:
         """Check if XStream has security configuration."""
@@ -1003,6 +1006,15 @@ class JavaASTAnalyzer:
             # RestTemplate: getForObject(tainted, ...), postForObject(tainted, ...)
             if called in ("getForObject", "getForEntity", "postForObject", "postForEntity",
                          "exchange", "execute"):
+                # Verify receiver is actually a RestTemplate, not JdbcTemplate/Statement/etc.
+                receiver = self._get_receiver(mi)
+                recv_text = node_text(receiver).strip() if receiver else ""
+                # Skip if receiver is clearly a DB/SQL object
+                if re.search(r'(?i)jdbc|db|dao|stmt|statement|conn|connection|entityManager|em\b|template(?!.*[Rr]est)', recv_text):
+                    continue
+                # For "execute" specifically, require RestTemplate-like receiver
+                if called == "execute" and not re.search(r'(?i)rest|restTemplate|http|client', recv_text):
+                    continue
                 args = get_child_by_type(mi, "argument_list")
                 if args:
                     first = self._get_first_arg(args)
@@ -1371,15 +1383,19 @@ class JavaASTAnalyzer:
             line = get_node_line(mi)
 
             # Document.parse(tainted) for MongoDB
-            if called == "parse" and "Document" in mi_text:
-                args = get_child_by_type(mi, "argument_list")
-                if args and tracker.is_tainted(node_text(args)):
-                    self._add_finding(
-                        line, 0,
-                        "NoSQL Injection - MongoDB Document.parse with tainted data",
-                        VulnCategory.NOSQL_INJECTION, Severity.CRITICAL, "HIGH",
-                        description="User-controlled data parsed as MongoDB document."
-                    )
+            if called == "parse":
+                receiver = self._get_receiver(mi)
+                recv_text = node_text(receiver).strip() if receiver else ""
+                # Match Document.parse or org.bson.Document.parse, but NOT DocumentBuilder.parse
+                if re.search(r'(?:^|\.)Document$', recv_text):
+                    args = get_child_by_type(mi, "argument_list")
+                    if args and tracker.is_tainted(node_text(args)):
+                        self._add_finding(
+                            line, 0,
+                            "NoSQL Injection - MongoDB Document.parse with tainted data",
+                            VulnCategory.NOSQL_INJECTION, Severity.CRITICAL, "HIGH",
+                            description="User-controlled data parsed as MongoDB document."
+                        )
 
         # new Document("$where", tainted)
         for oc in find_nodes(body, "object_creation_expression"):
