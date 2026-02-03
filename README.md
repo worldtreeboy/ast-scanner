@@ -857,6 +857,26 @@ python3 java-treesitter.py src/ --min-severity CRITICAL
 | 14 | **NoSQL Injection** | MongoDB `Document.parse()` / `$where` with tainted data |
 | 15 | **Reflection Injection** | `Class.forName()` / `getMethod("exec")` with tainted input |
 
+### Detection Quality Matrix
+
+| Category | 1st-Order | 2nd-Order | Evasion | AST Technique |
+|----------|:---------:|:---------:|:-------:|:-------------:|
+| SQL Injection | Excellent | DB-sourced concat | StringBuilder | `binary_expression` walk in `createQuery`/`executeQuery` args |
+| Command Injection | Excellent | — | Reflection `getMethod("exec")` | Method invocation tree + arg taint |
+| Code Injection | Excellent | — | SpEL, OGNL, MVEL, EL | Receiver-aware `eval()` dispatch |
+| JNDI Injection | Excellent | — | — | `lookup()` arg taint (Log4Shell) |
+| Deserialization | Excellent | — | SnakeYAML, XStream | Stream source tracking + `ValidatingObjectInputStream` FP skip |
+| SSRF | Excellent | — | — | URL/HttpClient/RestTemplate/WebClient/OkHttp arg taint |
+| XXE | Excellent | — | — | Per-variable secure config tracking (`setFeature`/`setProperty`) |
+| XPath Injection | Excellent | — | StringBuilder | Receiver-aware `evaluate()`/`compile()` + concat detection |
+| SSTI | Excellent | — | — | Velocity/Thymeleaf/Freemarker template arg taint |
+| IDOR | Excellent | — | EntityManager, Hibernate session | `findById`/`em.find`/`session.get` + ownership check scan |
+| MFLAC | Excellent | — | Auth-only vs role-based | AST annotation walk — `@PreAuthorize`/`@Secured`/`@RolesAllowed` value analysis |
+| Mass Assignment | Good | — | — | `@RequestBody` → `save()`/`update()` without DTO |
+| NoSQL Injection | Good | — | — | `Document.parse()` / `$where` arg taint |
+| Reflection Injection | Good | — | — | `Class.forName()` + `getMethod` arg taint |
+| Second-order SQLi | — | DB-entity → raw SQL | — | `db_sourced` set propagation to SQL sinks |
+
 ### Taint Tracking
 
 The scanner performs **per-method taint analysis** — taint is scoped to individual methods, eliminating cross-method false positives.
