@@ -108,6 +108,8 @@ Tracked sources include `repo.findById()`, `cursor.fetchone()`, `Model.findOne()
 | Expression Language (SpEL, OGNL, MVEL, EL) | Yes | - | Java |
 | Reflection Injection | Yes | - | Java |
 
+| Vulnerable Dependencies (`npm audit`) | Yes | - | JS (both scanners) |
+
 **Not detected:** XSS (use js-treesitter.py for JS), Weak Crypto, Session Fixation, Prototype Pollution (use js-treesitter.py for JS).
 
 ---
@@ -144,7 +146,7 @@ Tracked sources include `repo.findById()`, `cursor.fetchone()`, `Model.findOne()
 
 ### vulnhunter.py - Multi-Language Scanner
 
-The main scanner supporting all 7 languages with taint tracking, evasion detection, confidence scoring, and false positive reduction (parameterized queries, sanitization, allowlists, safe deserialization).
+The main scanner supporting all 7 languages with taint tracking, evasion detection, confidence scoring, and false positive reduction (parameterized queries, sanitization, allowlists, safe deserialization). Includes `npm audit` integration for JavaScript dependency vulnerability detection.
 
 ```bash
 python3 vulnhunter.py target/ [options]
@@ -170,7 +172,7 @@ python3 java-treesitter.py target/ [options]
 
 ### js-treesitter.py - JavaScript AST Scanner
 
-Deep JavaScript analysis using [tree-sitter](https://tree-sitter.github.io/) with **file-level taint tracking**. Covers 6 vulnerability categories: DOM XSS, Reflected XSS, Prototype Pollution, Dangerous Eval, Open Redirect, Command Injection. Supports ES6+, Express.js, jQuery, and HTML inline scripts.
+Deep JavaScript analysis using [tree-sitter](https://tree-sitter.github.io/) with **file-level taint tracking**. Covers 7 vulnerability categories: DOM XSS, Reflected XSS, Prototype Pollution, Dangerous Eval, Open Redirect, Command Injection, and Vulnerable Dependencies (`npm audit`). Supports ES6+, Express.js, jQuery, and HTML inline scripts. Automatically skips vendor/third-party library files.
 
 ```bash
 pip3 install tree-sitter tree-sitter-javascript

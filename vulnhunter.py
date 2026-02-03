@@ -39,6 +39,8 @@ import argparse
 import re
 import warnings
 import time
+import shutil
+import subprocess
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Set, Optional, Tuple, Any, Union
@@ -91,6 +93,7 @@ class VulnCategory(Enum):
     XXE = "XML External Entity"
     LDAP_INJECTION = "LDAP Injection"
     INFO_DISCLOSURE = "Information Disclosure"
+    VULNERABLE_DEPENDENCY = "Vulnerable Dependency"
 
 
 @dataclass
@@ -8874,6 +8877,87 @@ def _build_finding_panel(f: Finding, source_code: Optional[str] = None) -> Panel
     )
 
 
+# ---------------------------------------------------------------------------
+# npm audit integration
+# ---------------------------------------------------------------------------
+
+_NPM_SEVERITY_MAP = {
+    'critical': Severity.CRITICAL,
+    'high': Severity.HIGH,
+    'moderate': Severity.MEDIUM,
+    'low': Severity.LOW,
+}
+
+
+def run_npm_audit(target: str) -> List[Finding]:
+    """Run ``npm audit --json`` and return findings for known-vulnerable deps."""
+    if shutil.which('npm') is None:
+        print("[npm audit] npm is not installed — skipping dependency audit")
+        return []
+
+    target_path = Path(target)
+    target_dir = target_path if target_path.is_dir() else target_path.parent
+
+    lock_file = target_dir / 'package-lock.json'
+    if not lock_file.exists():
+        return []
+
+    try:
+        result = subprocess.run(
+            ['npm', 'audit', '--json'],
+            cwd=str(target_dir),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    vulns = data.get('vulnerabilities', {})
+    findings: List[Finding] = []
+
+    for pkg_name, info in vulns.items():
+        npm_severity = info.get('severity', 'low')
+        severity = _NPM_SEVERITY_MAP.get(npm_severity, Severity.LOW)
+        version = info.get('range', 'unknown')
+        fix_available = info.get('fixAvailable', False)
+        via = info.get('via', [])
+
+        desc_parts = []
+        for entry in via:
+            if isinstance(entry, dict):
+                title = entry.get('title', '')
+                url = entry.get('url', '')
+                if title:
+                    desc_parts.append(title)
+                if url:
+                    desc_parts.append(url)
+        if fix_available:
+            desc_parts.append("Fix available: yes")
+        else:
+            desc_parts.append("Fix available: no")
+        desc_parts.append(f"Affected range: {version}")
+
+        findings.append(Finding(
+            file_path="package.json",
+            line_number=0,
+            col_offset=0,
+            line_content="",
+            vulnerability_name=f"Vulnerable Dependency - {pkg_name}@{version} ({npm_severity})",
+            category=VulnCategory.VULNERABLE_DEPENDENCY,
+            severity=severity,
+            confidence="HIGH",
+            description="; ".join(desc_parts),
+        ))
+
+    return findings
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='VulnHunter - Multi-Language SAST with 2nd-Order Injection Detection',
@@ -8905,6 +8989,10 @@ def main():
 
     scanner = ASTScanner(verbose=args.verbose, scan_all=args.scan_all)
     findings = scanner.scan(args.target)
+
+    # npm audit integration
+    npm_findings = run_npm_audit(args.target)
+    findings.extend(npm_findings)
 
     # Filter by confidence
     conf_levels = {'HIGH': 3, 'MEDIUM': 2, 'LOW': 1}

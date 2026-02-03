@@ -28,6 +28,8 @@ import json
 import argparse
 import re
 import time
+import shutil
+import subprocess
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Set, Optional, Tuple
@@ -79,6 +81,7 @@ class VulnCategory(Enum):
     DANGEROUS_EVAL = "Dangerous Eval"
     OPEN_REDIRECT = "Open Redirect"
     COMMAND_INJECTION = "Command Injection"
+    VULNERABLE_DEPENDENCY = "Vulnerable Dependency"
 
 
 @dataclass
@@ -1750,14 +1753,46 @@ def output_json(findings: List[Finding], file_path: str = None):
 # ============================================================================
 
 SUPPORTED_EXTENSIONS = {'.js', '.jsx', '.mjs', '.html', '.htm', '.vue', '.svelte'}
-SKIP_DIRS = {'node_modules', '.git', 'vendor', 'dist', 'build', '.next', '__pycache__'}
+SKIP_DIRS = {'node_modules', '.git', 'vendor', 'dist', 'build', '.next', '__pycache__',
+             'bower_components', 'jspm_packages', 'third_party', 'third-party',
+             'external', 'externals', '.bundle'}
 SKIP_PATTERNS = ['node_modules', 'vendor', 'dist/', 'build/',
                  'bundle.js', 'chunk.', '.bundle.', 'polyfill', '.map']
+
+# Vendor library filename patterns — if any pattern appears in the filename, skip it
+SKIP_VENDOR_FILES = {
+    # Minified files
+    '.min.js', '.min.css', '.bundle.js', '.chunk.js',
+    '-min.js', '-min.css', '.prod.js', '.production.js',
+    # Common vendor libraries
+    'jquery', 'bootstrap', 'angular', 'react', 'vue', 'ember',
+    'backbone', 'lodash', 'underscore', 'moment', 'axios',
+    'popper', 'd3', 'chart', 'highcharts', 'three',
+    'socket.io', 'knockout', 'polymer', 'mootools', 'prototype',
+    'dojo', 'ext-all', 'sencha', 'kendo', 'telerik',
+    'tinymce', 'ckeditor', 'codemirror', 'ace-builds',
+    'select2', 'chosen', 'datatables', 'fullcalendar',
+    'sweetalert', 'toastr', 'bootbox', 'magnific-popup',
+    'slick', 'owl.carousel', 'swiper', 'photoswipe',
+    'leaflet', 'mapbox', 'google-maps', 'openlayers',
+    'hammer', 'modernizr', 'respond', 'html5shiv',
+    'normalize.css', 'reset.css', 'sanitize.css',
+    # Font/icon libraries
+    'fontawesome', 'font-awesome', 'ionicons', 'material-icons',
+    'glyphicons', 'feather', 'bootstrap-icons',
+    # Polyfills and shims
+    'polyfill', 'core-js', 'babel-polyfill', 'es5-shim', 'es6-shim',
+    # Build artifacts
+    'webpack-runtime', 'runtime~', 'vendors~', 'vendor.',
+}
 
 
 def should_skip_file(file_path: str) -> bool:
     path_lower = file_path.lower()
-    return any(p in path_lower for p in SKIP_PATTERNS)
+    if any(p in path_lower for p in SKIP_PATTERNS):
+        return True
+    filename_lower = os.path.basename(path_lower)
+    return any(p in filename_lower for p in SKIP_VENDOR_FILES)
 
 
 def detect_minified(content: str, file_path: str) -> bool:
@@ -1852,6 +1887,87 @@ def scan_html_file(file_path: str, content: str, min_confidence: str) -> List[Fi
             if in_script:
                 continue
         findings.append(f)
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# npm audit integration
+# ---------------------------------------------------------------------------
+
+_NPM_SEVERITY_MAP = {
+    'critical': Severity.CRITICAL,
+    'high': Severity.HIGH,
+    'moderate': Severity.MEDIUM,
+    'low': Severity.LOW,
+}
+
+
+def run_npm_audit(target: str) -> List[Finding]:
+    """Run ``npm audit --json`` and return findings for known-vulnerable deps."""
+    if shutil.which('npm') is None:
+        print("[npm audit] npm is not installed — skipping dependency audit")
+        return []
+
+    target_path = Path(target)
+    target_dir = target_path if target_path.is_dir() else target_path.parent
+
+    lock_file = target_dir / 'package-lock.json'
+    if not lock_file.exists():
+        return []
+
+    try:
+        result = subprocess.run(
+            ['npm', 'audit', '--json'],
+            cwd=str(target_dir),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    vulns = data.get('vulnerabilities', {})
+    findings: List[Finding] = []
+
+    for pkg_name, info in vulns.items():
+        npm_severity = info.get('severity', 'low')
+        severity = _NPM_SEVERITY_MAP.get(npm_severity, Severity.LOW)
+        version = info.get('range', 'unknown')
+        fix_available = info.get('fixAvailable', False)
+        via = info.get('via', [])
+
+        desc_parts = []
+        for entry in via:
+            if isinstance(entry, dict):
+                title = entry.get('title', '')
+                url = entry.get('url', '')
+                if title:
+                    desc_parts.append(title)
+                if url:
+                    desc_parts.append(url)
+        if fix_available:
+            desc_parts.append("Fix available: yes")
+        else:
+            desc_parts.append("Fix available: no")
+        desc_parts.append(f"Affected range: {version}")
+
+        findings.append(Finding(
+            file_path="package.json",
+            line_number=0,
+            col_offset=0,
+            line_content="",
+            vulnerability_name=f"Vulnerable Dependency - {pkg_name}@{version} ({npm_severity})",
+            category=VulnCategory.VULNERABLE_DEPENDENCY,
+            severity=severity,
+            confidence="HIGH",
+            description="; ".join(desc_parts),
+        ))
+
     return findings
 
 
@@ -1972,6 +2088,10 @@ def main():
         min_confidence=min_confidence or 'HIGH',
         show_progress=not is_json
     )
+
+    # npm audit integration
+    npm_findings = run_npm_audit(args.target)
+    findings.extend(npm_findings)
 
     findings = filter_findings(findings, min_severity, min_confidence)
     findings.sort(key=lambda f: (f.file_path, f.line_number))
