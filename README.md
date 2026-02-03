@@ -430,6 +430,7 @@ VulnHunter detects **Insecure Direct Object Reference (IDOR)** and **Missing Fun
 | **Auth-only on admin endpoint** | All | `[Authorize]` without `Roles="Admin"`, `isLoggedIn` without `isAdmin` |
 | **Missing security annotation** | Java | `@GetMapping("/admin/reset")` without `@PreAuthorize` (AST-based) |
 | **Privilege escalation sinks** | Java | `updateRole()`, `promoteToAdmin()` with auth-only guard |
+| **Annotation inheritance bypass** | Java | `@Service` + class-level `@PreAuthorize` with unprotected `deleteAll()` methods |
 | **Sinatra/Express unprotected routes** | Ruby, JS | `get '/admin' do` without role check |
 
 ### False Positive Reduction
@@ -439,6 +440,9 @@ VulnHunter detects **Insecure Direct Object Reference (IDOR)** and **Missing Fun
 - Role checks in method body suppress MFLAC (e.g., `User.IsInRole("Admin")`, `user['role'] == 'admin'`)
 - Function definitions excluded from auth context matching
 - String literals in route attributes excluded from brace-depth analysis
+- Comment lines excluded from auth context (prevents `// no check for getOwnerId()` from suppressing findings)
+
+> **Note:** IDOR and MFLAC detection is **not comprehensive**. These are pattern-based heuristics that catch common anti-patterns but may miss complex authorization logic, custom middleware chains, or framework-specific security configurations. For thorough access control testing, combine static analysis with dynamic testing (e.g., Burp Suite, OWASP ZAP) and manual code review.
 
 ---
 

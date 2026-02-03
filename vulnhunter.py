@@ -6167,7 +6167,11 @@ class JavaAnalyzer:
 
             context_start = max(0, i - 8)
             context_end = min(len(self.source_lines), i + 5)
-            context = '\n'.join(self.source_lines[context_start:context_end])
+            # Exclude comment lines from context — comments describing vulnerabilities
+            # (e.g. "// no check for getOwnerId()") should not count as auth checks
+            context_lines = [l for l in self.source_lines[context_start:context_end]
+                             if not l.strip().startswith('//') and not l.strip().startswith('/*') and not l.strip().startswith('*')]
+            context = '\n'.join(context_lines)
 
             has_auth_context = any(re.search(pat, context, re.IGNORECASE) for pat in auth_context_patterns)
 
@@ -6467,6 +6471,102 @@ class JavaAnalyzer:
                                 f"({priv_esc_sinks.group()}) but only has "
                                 f"{'no security annotation' if effective is None else 'basic authentication (not admin-level)'}. "
                                 f"Any {'user' if effective is None else 'authenticated user'} could escalate privileges."
+                            )
+
+            # =================================================================
+            # MFLAC: @Service/@Component class-level annotation inheritance
+            # In misconfigured Spring Security (e.g. wrong ProxyMode, or
+            # @EnableMethodSecurity not set), class-level @PreAuthorize may
+            # NOT be inherited by all public methods. Warn when a @Service
+            # class relies solely on class-level security with public methods
+            # that perform destructive operations.
+            # =================================================================
+            if tree:
+                service_stereotypes = {'Service', 'Component', 'Bean', 'Repository'}
+                destructive_method_patterns = re.compile(
+                    r'deleteAll|removeAll|truncate|dropTable|purge|wipe|'
+                    r'deleteBy|removeBy|destroyAll|clearAll|resetAll|'
+                    r'\.deleteAll\b|\.removeAll\b|\.truncate\b|\.drop\b',
+                    re.IGNORECASE
+                )
+
+                for _, class_node in tree.filter(javalang.tree.ClassDeclaration):
+                    class_ann_names = {a.name for a in (class_node.annotations or [])}
+
+                    # Only target @Service/@Component classes (not @RestController)
+                    is_service = bool(class_ann_names & service_stereotypes)
+                    is_controller = bool(class_ann_names & {'RestController', 'Controller'})
+                    if not is_service or is_controller:
+                        continue
+
+                    # Check if class has role-level security annotation
+                    class_has_role = False
+                    for ann in (class_node.annotations or []):
+                        result = _classify_security_annotation(ann)
+                        if result == 'role':
+                            class_has_role = True
+                            break
+
+                    if not class_has_role:
+                        continue
+
+                    # Check each public method without its own @PreAuthorize
+                    for method in (class_node.methods or []):
+                        if 'public' not in (method.modifiers or set()):
+                            continue
+
+                        method_ann_names = {a.name for a in (method.annotations or [])}
+                        has_own_security = bool(
+                            method_ann_names & {'PreAuthorize', 'Secured', 'RolesAllowed',
+                                                'DenyAll', 'PermitAll'}
+                        )
+                        if has_own_security:
+                            continue
+
+                        # Check if method body contains destructive operations
+                        line_num = method.position.line if method.position else 0
+                        if line_num <= 0:
+                            continue
+
+                        brace_depth = 0
+                        body_start = line_num - 1
+                        body_end = min(len(self.source_lines), line_num + 30)
+                        found_open = False
+                        for b_idx in range(body_start, body_end):
+                            in_str = False
+                            str_ch = None
+                            for ch in self.source_lines[b_idx]:
+                                if in_str:
+                                    if ch == str_ch:
+                                        in_str = False
+                                    continue
+                                if ch in ('"', "'"):
+                                    in_str = True
+                                    str_ch = ch
+                                    continue
+                                if ch == '{':
+                                    brace_depth += 1
+                                    found_open = True
+                                elif ch == '}':
+                                    brace_depth -= 1
+                                    if found_open and brace_depth == 0:
+                                        body_end = b_idx + 1
+                                        break
+                            if found_open and brace_depth == 0:
+                                break
+                        handler_body = '\n'.join(self.source_lines[body_start:body_end])
+
+                        is_destructive = destructive_method_patterns.search(handler_body)
+
+                        if is_destructive:
+                            self._add_finding(
+                                line_num,
+                                "MFLAC - Service method relies on class-level @PreAuthorize inheritance",
+                                VulnCategory.IDOR, Severity.MEDIUM, "HIGH",
+                                description=f"Method '{method.name}' in @Service class '{class_node.name}' performs "
+                                f"destructive operations ({is_destructive.group()}) but has no explicit "
+                                f"@PreAuthorize annotation. It relies on class-level annotation inheritance, "
+                                f"which can be bypassed with misconfigured proxy modes or internal method calls."
                             )
 
 
