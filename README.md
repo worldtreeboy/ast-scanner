@@ -108,16 +108,25 @@
 <td align="center"><b>9</b></td>
 </tr>
 <tr>
+<td><b>DVJA (Struts2)</b> <sup>TS</sup></td>
+<td align="center">21</td>
+<td align="center"><code>2</code></td>
+<td align="center"><code>2</code></td>
+<td align="center"><code>0</code></td>
+<td align="center"><b>4</b></td>
+</tr>
+<tr>
 <td colspan="2" align="right"><b>TOTAL</b></td>
-<td align="center"><b><code>74</code></b></td>
-<td align="center"><b><code>121</code></b></td>
+<td align="center"><b><code>76</code></b></td>
+<td align="center"><b><code>123</code></b></td>
 <td align="center"><b><code>12</code></b></td>
-<td align="center"><b>203</b></td>
+<td align="center"><b>207</b></td>
 </tr>
 </table>
 
 <p align="center">
-  <sub>616 files scanned across Python, Java, JavaScript, TypeScript, Ruby, and C# codebases</sub>
+  <sub>637 files scanned across Python, Java, JavaScript, TypeScript, Ruby, and C# codebases</sub><br>
+  <sub><sup>TS</sup> = Scanned with java-treesitter.py (AST-based scanner)</sub>
 </p>
 
 ### Vulnerabilities Detected
@@ -180,6 +189,19 @@
 - Deserialization via `Type.GetType()` with user-controlled type
 - XXE in XML parser without secure configuration
 - SSRF in URL construction
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+**DVJA - Damn Vulnerable Java App (Struts2)** <sup>TS</sup>
+- SQL Injection via string concatenation in JPA `createQuery`
+- IDOR via `EntityManager.find()` without ownership check
+- Framework-agnostic taint tracking (non-Spring)
+
+</td>
+<td width="50%" valign="top">
 
 </td>
 </tr>
@@ -356,15 +378,17 @@ Each language uses a different mix of analysis techniques depending on parser av
 |----------|:------------------:|:--------------------:|:----------------------:|-------|
 | **Python** | ~60% | ~10% | ~30% | Full AST via `ast.NodeVisitor` — traces assignments, calls, returns. Regex for evasion & IDOR post-pass. |
 | **Java** | — | ~45% | ~55% | Regex identifies `@PathVariable`/`@RequestParam` sources, tracks through getters & entity chains to sinks. Spring annotation analysis for MFLAC. |
+| **Java** <sup>TS</sup> | **~85%** | — | ~15% | **Tree-sitter AST** with per-method taint tracking. Scoped taint propagation, annotation-aware, framework-agnostic. See [Java AST Scanner](#java-ast-scanner). |
 | **JavaScript** | — | ~30% | ~70% | Regex-based source identification (`req.params`, `req.body`), variable assignment tracking. Direct pattern matching for IDOR/MFLAC/NoSQL. |
 | **TypeScript** | — | ~30% | ~70% | Same engine as JavaScript. Covers NestJS decorators and TypeORM patterns. |
 | **PHP** | — | ~35% | ~65% | Tracks `$_GET`/`$_POST`/`$request->input()` through variable assignments. Regex for Laravel/PDO/mysqli sink detection. |
 | **C#** | — | ~40% | ~60% | Constructor parameter flow, LINQ taint tunnel, field tracking. Brace-depth-aware method body analysis for IDOR ownership checks. |
 | **Ruby** | — | ~30% | ~70% | Tracks `params[]` through variable assignments. Regex for ActiveRecord sinks, 2nd-order structural/calculation/destructive SQLi. |
 
-> **AST Taint Tracking** = Full abstract syntax tree parsing with data flow analysis (only Python).
+> **AST Taint Tracking** = Full abstract syntax tree parsing with data flow analysis (Python via `ast`, Java via `tree-sitter`).
 > **Regex Taint Tracking** = Regex-based source identification → variable propagation → sink detection (all other languages).
 > **Regex Pattern Matching** = Direct pattern matching without variable flow tracking (e.g., `findById(req.params.id)` matched as a single pattern).
+> <sup>TS</sup> = `java-treesitter.py` — standalone AST-based scanner using tree-sitter.
 
 ### Detection Quality Matrix
 
@@ -430,6 +454,11 @@ python3 vulnhunter.py project/ --output json -o report.json
 
 # High-confidence only
 python3 vulnhunter.py project/ --min-confidence HIGH
+
+# Java AST Scanner (tree-sitter) — deeper Java analysis
+pip3 install tree-sitter tree-sitter-java
+python3 java-treesitter.py /path/to/java/project
+python3 java-treesitter.py MyApp.java --output json -o report.json
 ```
 
 ---
@@ -761,6 +790,109 @@ python3 vulnhunter.py . --min-confidence HIGH
 
 ---
 
+## Java AST Scanner - Tree-sitter Based Analysis
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Java-AST--Based-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white" alt="Java AST">
+  <img src="https://img.shields.io/badge/tree--sitter-Parser-4B8BBE?style=for-the-badge" alt="tree-sitter">
+  <img src="https://img.shields.io/badge/Taint_Tracking-Per_Method-ff6b6b?style=for-the-badge" alt="Taint Tracking">
+</p>
+
+**java-treesitter.py** is a standalone AST-based Java vulnerability scanner using [tree-sitter](https://tree-sitter.github.io/) for deep code analysis. It provides **~85% AST-based detection** with per-method taint scoping — a significant upgrade over the regex-based Java scanner in vulnhunter.py.
+
+### Why Tree-sitter?
+
+| Feature | vulnhunter.py (Regex) | java-treesitter.py (AST) |
+|---------|:---------------------:|:------------------------:|
+| Taint Tracking | Line-by-line regex | Per-method AST scoped |
+| Variable Resolution | Pattern matching | Tree-sitter field access |
+| False Positive Rate | Moderate | Low |
+| Framework Support | Spring Boot | Spring, Struts2, Servlets, any Java |
+| MFLAC Detection | Regex annotation scan | AST annotation + role analysis |
+| String Concat in SQL | Regex pattern | AST binary_expression walk |
+| Method Name Resolution | String split | `node.child_by_field_name("name")` |
+
+### Installation
+
+```bash
+pip3 install tree-sitter tree-sitter-java
+```
+
+### Usage
+
+```bash
+# Scan a Java project
+python3 java-treesitter.py /path/to/project
+
+# Scan single file
+python3 java-treesitter.py VulnerableApp.java
+
+# JSON output for CI/CD
+python3 java-treesitter.py src/ --output json -o report.json
+
+# Show all findings (including MEDIUM/LOW confidence)
+python3 java-treesitter.py src/ --all
+
+# Filter by severity
+python3 java-treesitter.py src/ --min-severity CRITICAL
+```
+
+### Detection Categories
+
+| # | Vulnerability | AST Technique |
+|---|--------------|---------------|
+| 1 | **SQL Injection** | String concat detection in `createQuery`/`createNativeQuery`/`executeQuery` via AST `binary_expression` walk |
+| 2 | **Command Injection** | `Runtime.exec()`/`ProcessBuilder` arg taint via method invocation tree |
+| 3 | **Code Injection** | `ScriptEngine.eval()`, SpEL, OGNL, MVEL, EL — receiver + arg taint check |
+| 4 | **JNDI Injection** | `InitialContext.lookup()` with tainted arg (Log4Shell-style) |
+| 5 | **Deserialization** | `ObjectInputStream.readObject()`, XMLDecoder, SnakeYAML, XStream — with `ValidatingObjectInputStream` FP suppression |
+| 6 | **SSRF** | URL/HttpClient/RestTemplate/WebClient with tainted URI |
+| 7 | **XXE** | XML parser factory without `setFeature(DISALLOW_DOCTYPE)` — tracks secure config per variable |
+| 8 | **XPath Injection** | `XPath.evaluate()`/`compile()` with tainted concatenation |
+| 9 | **SSTI** | Velocity, Thymeleaf, Freemarker with tainted templates |
+| 10 | **IDOR** | `findById`/`EntityManager.find`/`session.get` with user-supplied ID, no ownership check |
+| 11 | **MFLAC** | Admin endpoints without `@PreAuthorize`/`@Secured`/`@RolesAllowed` — distinguishes auth-only vs role-based |
+| 12 | **Mass Assignment** | `@RequestBody` passed directly to `save()`/`update()` without DTO filtering |
+| 13 | **Second-order SQLi** | DB-fetched entity values concatenated in subsequent SQL queries |
+| 14 | **NoSQL Injection** | MongoDB `Document.parse()` / `$where` with tainted data |
+| 15 | **Reflection Injection** | `Class.forName()` / `getMethod("exec")` with tainted input |
+
+### Taint Tracking
+
+The scanner performs **per-method taint analysis** — taint is scoped to individual methods, eliminating cross-method false positives.
+
+**Taint Sources:**
+- `@PathVariable`, `@RequestParam`, `@RequestBody`, `@CookieValue`, `@RequestHeader` parameters
+- `request.getParameter()`, `.getHeader()`, `.getQueryString()`
+- All public method parameters (framework-agnostic — supports Struts2, Servlets, plain Java)
+
+**Taint Propagation:**
+- Variable assignments (`String x = taintedVar;`)
+- String concatenation (`"SELECT " + taintedVar`)
+- `StringBuilder.append(taintedVar)`
+- `String.format()` with tainted args
+- DB-sourced values (for 2nd-order detection)
+
+**False Positive Reduction:**
+- Parameterized queries (`?` and `:param` placeholders) — auto-skipped
+- `PreparedStatement.setString()`/`setInt()` — safe parameterization
+- `ValidatingObjectInputStream` with whitelist — not flagged
+- Secure XML parser config (`setFeature(DISALLOW_DOCTYPE)`) tracked per variable
+- Ownership checks in IDOR (`currentUser.getId().equals()`, `SecurityContextHolder`)
+- Inline role checks in MFLAC (`hasRole("ADMIN")`, `getRoles().contains()`)
+
+### Test Results
+
+| Test File | Findings | Categories |
+|-----------|:--------:|:-----------|
+| vulnerability-tests-java.java | 29 | SQL, Command, Code, XPath, XXE, SSRF, SSTI, Deserialization, IDOR |
+| vulnerability-tests-spring.java | 49 | All 15 categories including MFLAC, Mass Assignment, 2nd-order |
+| idor-mflac-comprehensive-java.java | 10 | IDOR (5 patterns), MFLAC (3 patterns) |
+| mflac-tests.java | 5 | Auth-only detection, @Secured/@RolesAllowed analysis |
+| DVJA (Struts2) | 4 | SQL Injection, IDOR (non-Spring framework) |
+
+---
+
 ## JSHunter - JavaScript Vulnerability Scanner
 
 <p align="center">
@@ -907,7 +1039,8 @@ Vulnerabilities Found: 8
 
 ```
 vulnhunter/
-├── vulnhunter.py          # Multi-language SAST scanner
+├── vulnhunter.py          # Multi-language SAST scanner (regex-based)
+├── java-treesitter.py     # Java AST scanner (tree-sitter, per-method taint)
 ├── jshunter.py            # Specialized JavaScript vulnerability scanner
 ├── requirements.txt       # Python dependencies
 ├── README.md
