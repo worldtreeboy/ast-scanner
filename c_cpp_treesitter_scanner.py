@@ -1035,6 +1035,16 @@ def _identifier_used_after(compound: Node, var_name: str, after_byte: int,
                 fname = get_call_name(grandparent)
                 if fname in FREE_LIKE_FUNCS:
                     continue
+        # Also skip if inside a cast_expression that is the argument of free:
+        # e.g., free((void*)base) — base is inside cast_expression → argument_list → call_expression
+        if parent and parent.type == "cast_expression":
+            gp = parent.parent
+            if gp and gp.type == "argument_list":
+                ggp = gp.parent
+                if ggp and ggp.type == "call_expression":
+                    fname = get_call_name(ggp)
+                    if fname in FREE_LIKE_FUNCS:
+                        continue
         if parent and parent.type == "delete_expression":
             continue
         # Skip if it's being reassigned (LHS of assignment or init_declarator)
@@ -1138,6 +1148,49 @@ def rule_use_after_free(tree: Node, source_bytes: bytes, filename: str) -> Gener
                     reported_uses.add(use.start_byte)
                     break  # one finding per (free, name) pair
 
+        # --- Sub-rule: Loop iteration UAF ---
+        # Pattern: free(p) inside a loop body, and p is used BEFORE the free
+        # in the same loop body — the next iteration dereferences freed memory.
+        for var_name, free_byte, free_node in frees:
+            # Check if free is inside a for/while/do loop body
+            loop_body = None
+            cur = free_node.parent
+            while cur and cur != body:
+                if cur.type == "compound_statement":
+                    parent_of_compound = cur.parent
+                    if parent_of_compound and parent_of_compound.type in (
+                        "for_statement", "while_statement", "do_statement"
+                    ):
+                        loop_body = cur
+                        break
+                cur = cur.parent
+            if not loop_body:
+                continue
+            # Check if var_name is used (dereferenced) BEFORE free in same loop body
+            # and not reassigned between loop start and the use
+            names_to_check_loop = [var_name] + [k for k, v in alias_map.items() if v == var_name]
+            for check_name in names_to_check_loop:
+                use = _identifier_used_after(loop_body, check_name, loop_body.start_byte)
+                if use and use.start_byte < free_byte and use.start_byte not in reported_uses:
+                    # Verify the variable is not reassigned between loop start and use
+                    if _is_reassigned_between(loop_body, check_name, loop_body.start_byte, use.start_byte):
+                        continue
+                    line, col = node_location(use)
+                    free_line = node_location(free_node)[0]
+                    yield Finding(
+                        file_path=filename, line_number=line, col_offset=col,
+                        line_content=get_source_line(source_bytes, line),
+                        vulnerability_name=f"Potential use-after-free: '{var_name}' freed at line {free_line} (loop iteration)",
+                        rule_id="MEM-USE-AFTER-FREE",
+                        category=VulnCategory.MEMORY_SAFETY,
+                        severity=Severity.CRITICAL,
+                        confidence="MEDIUM",
+                        evidence=f"free({var_name}) at line {free_line}, {check_name} used at line {line} in next loop iteration",
+                        description="Pointer freed in loop body and reused in next iteration without reassignment.",
+                    )
+                    reported_uses.add(use.start_byte)
+                    break
+
 
 # --- Rule 4: Double free (heuristic) -----------------------------------------
 
@@ -1153,9 +1206,14 @@ def _is_reassigned_between(compound: Node, var_name: str, start_byte: int, end_b
         if parent and parent.type == "assignment_expression":
             if parent.children and parent.children[0] == ident:
                 return True
-        # init_declarator
+        # init_declarator (direct child, e.g., int p = ...)
         if parent and parent.type == "init_declarator":
             return True
+        # pointer_declarator within init_declarator (e.g., char* p = ...)
+        if parent and parent.type == "pointer_declarator":
+            gp = parent.parent
+            if gp and gp.type == "init_declarator":
+                return True
     return False
 
 
@@ -1239,6 +1297,10 @@ def rule_return_local_addr(tree: Node, source_bytes: bytes, filename: str) -> Ge
                     has_pointer = any(c.type == "pointer_declarator" or c.type == "abstract_pointer_declarator"
                                       for c in pdecl.children)
                     if has_pointer:
+                        continue
+                    # Skip array parameters — int arr[10] decays to pointer in C
+                    has_array = any(c.type == "array_declarator" for c in pdecl.children)
+                    if has_array:
                         continue
                     for ident in find_nodes(pdecl, "identifier"):
                         local_vars.add(get_node_text(ident))
@@ -1551,6 +1613,23 @@ def rule_null_deref(tree: Node, source_bytes: bytes, filename: str) -> Generator
                     continue
                 var_name = var_names[-1]
                 alloc_sites.append((var_name, fname, call_node.start_byte, call_node))
+
+        # Also track alloc via assignment_expression: p = realloc(p, size);
+        for assign in find_nodes(body, "assignment_expression"):
+            children = assign.children
+            if len(children) < 3:
+                continue
+            lhs = children[0]
+            rhs = children[-1]
+            if not is_identifier(lhs):
+                continue
+            result = _extract_alloc_call(rhs)
+            if not result:
+                continue
+            fname, call_node = result
+            var_name = get_node_text(lhs)
+            # Only add if this is a NEW alloc site (different byte offset)
+            alloc_sites.append((var_name, fname, call_node.start_byte, call_node))
 
         # Also track simple aliases: char* q = p; where p is an alloc'd variable
         alloc_var_names = {name for name, _, _, _ in alloc_sites}
