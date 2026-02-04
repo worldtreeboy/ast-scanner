@@ -109,7 +109,7 @@ Tracked sources include `repo.findById()`, `cursor.fetchone()`, `Model.findOne()
 | XPath/XQuery Injection | Yes | Yes | All 7 |
 | XXE & XSLT | Yes | - | All 7 |
 | SSTI | Yes | - | All 7 |
-| Insecure Deserialization (OIS, SnakeYAML, XStream, XMLDecoder, Jackson, Kryo, Hessian, node-serialize, serialijse, js-yaml) | Yes | Double-unserialize | All 7 |
+| Insecure Deserialization (OIS, SnakeYAML, XStream, XMLDecoder, Jackson, Kryo, Hessian, node-serialize, serialijse, js-yaml, phar://) | Yes | Yes | All 7 |
 | Expression Language (SpEL, OGNL, MVEL, EL) | Yes | - | Java |
 | Reflection Injection | Yes | - | Java |
 
@@ -228,7 +228,7 @@ python3 c_cpp_treesitter_scanner.py target/ [options]
 
 ### php-treesitter.py - PHP AST Scanner
 
-Deep PHP analysis using [tree-sitter](https://tree-sitter.github.io/) with **per-function taint tracking** and sanitizer awareness. Covers 9 vulnerability categories across all major PHP sinks. Taint sources: `$_GET`, `$_POST`, `$_REQUEST`, `$_COOKIE`, `$_SERVER`, `$_FILES`, `$_ENV`, `file_get_contents("php://input")`, `getenv()`, and public function parameters.
+Deep PHP analysis using [tree-sitter](https://tree-sitter.github.io/) with **per-function taint tracking** and sanitizer awareness. Covers 12 vulnerability categories across all major PHP sinks including phar:// deserialization, second-order deserialization, and gadget chain detection. Taint sources: `$_GET`, `$_POST`, `$_REQUEST`, `$_COOKIE`, `$_SERVER`, `$_FILES`, `$_ENV`, `file_get_contents("php://input")`, `getenv()`, and public function parameters.
 
 ```bash
 pip3 install tree-sitter tree-sitter-php
@@ -246,12 +246,15 @@ python3 php-treesitter.py target/ [options]
 | SQL Injection | `mysql_query`, `mysqli_query`, `pg_query`, `->query()`, `->exec()`, `->prepare()` with concat | CRITICAL |
 | Command Injection | `exec`, `system`, `passthru`, `shell_exec`, `popen`, `proc_open`, `pcntl_exec`, backtick | CRITICAL |
 | Code Injection | `eval`, `assert`, `create_function`, `preg_replace /e` | CRITICAL |
-| Insecure Deserialization | `unserialize` (with `allowed_classes` mitigation detection) | CRITICAL |
+| Insecure Deserialization | `unserialize`, `yaml_parse`, `igbinary_unserialize`, `msgpack_unpack`, `wddx_deserialize`, `json_decode` (without assoc), phar:// trigger functions | CRITICAL |
+| Gadget Chain Indicators | Magic methods (`__wakeup`, `__destruct`, `__toString`, etc.) calling dangerous functions | LOW |
 | XXE | `DOMDocument->loadXML/loadHTML`, `simplexml_load_string`, `XMLReader` | HIGH |
 | XPath Injection | `DOMXPath->query/evaluate` | HIGH |
 | SSTI | Twig `->render`/`->createTemplate`, Smarty `->fetch("string:")` | HIGH |
 | NoSQL Injection | MongoDB `->find`, `->findOne`, `->aggregate`, `->deleteMany`, `->updateMany` | CRITICAL |
-| Second-order SQLi | DB-fetched data (`->fetch()`, `mysqli_fetch_*`) in raw SQL concat | HIGH |
+| Second-order SQLi | DB-fetched data (`->fetch()`, `mysqli_fetch_*`, `pg_fetch_*`) in raw SQL concat | HIGH |
+| Second-order Deserialization | DB-fetched data in `unserialize`, `yaml_parse`, `igbinary_unserialize`, `msgpack_unpack`, `wddx_deserialize` | HIGH |
+| Phar Deserialization | Tainted paths in `file_get_contents`, `file_exists`, `fopen`, `getimagesize`, `include`/`require`, and 20+ filesystem functions | CRITICAL |
 
 **FP/FN test results** (178 test functions, 1355 lines):
 
@@ -295,7 +298,9 @@ vulnhunter/
 └── test-files/                    # Vulnerability test cases per language
     ├── c_cpp_fp_fn_test.c         # C/C++ TP/TN/FP/FN comprehensive test
     ├── c_cpp_scanner_test.c       # C/C++ rule coverage test
-    └── c_cpp_test_project/        # Multi-file C project test suite
+    ├── c_cpp_test_project/        # Multi-file C project test suite
+    ├── php_deserialization_test.php # PHP deserialization/phar/gadget tests
+    └── php_second_order_test.php  # PHP 2nd-order SQLi & deserialization tests
 ```
 
 ---

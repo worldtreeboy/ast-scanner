@@ -661,6 +661,9 @@ class PHPASTAnalyzer:
         if self._has_top_level_code():
             self._analyze_top_level()
 
+        # Class-level gadget chain detection (not per-function)
+        self._check_gadget_methods()
+
         return self.findings
 
     def _get_constructor_tainted_props(self, cls: Node) -> Dict[str, Tuple[int, str]]:
@@ -753,7 +756,7 @@ class PHPASTAnalyzer:
                 # For mysqli_query, the query is the 2nd arg; for mysql_query it's 1st
                 all_args = self._get_all_args(args)
                 query_arg = None
-                if func_name in ("mysqli_query", "mysqli_real_query") and len(all_args) >= 2:
+                if func_name in ("mysqli_query", "mysqli_real_query", "pg_query") and len(all_args) >= 2:
                     query_arg = all_args[1]
                 elif all_args:
                     query_arg = all_args[0]
@@ -995,8 +998,26 @@ class PHPASTAnalyzer:
     # Insecure Deserialization Detection
     # ========================================================================
 
+    # Deserialization functions: name -> (severity, confidence, description)
+    DESER_FUNCTIONS = {
+        "unserialize": (Severity.CRITICAL, "HIGH",
+                        "User-controlled data in unserialize() allows arbitrary object injection."),
+        "yaml_parse": (Severity.CRITICAL, "HIGH",
+                       "yaml_parse() can instantiate arbitrary objects via !php/object tags."),
+        "yaml_parse_file": (Severity.CRITICAL, "HIGH",
+                            "yaml_parse_file() can instantiate arbitrary objects via !php/object tags."),
+        "yaml_parse_url": (Severity.CRITICAL, "HIGH",
+                           "yaml_parse_url() can instantiate arbitrary objects via !php/object tags."),
+        "igbinary_unserialize": (Severity.CRITICAL, "HIGH",
+                                 "igbinary_unserialize() deserializes binary format and allows object injection."),
+        "msgpack_unpack": (Severity.HIGH, "HIGH",
+                           "msgpack_unpack() with tainted input may allow object injection."),
+        "wddx_deserialize": (Severity.HIGH, "HIGH",
+                              "wddx_deserialize() with tainted input may allow object injection."),
+    }
+
     def _check_deserialization(self, func: Node, tracker: TaintTracker):
-        """Detect insecure deserialization via unserialize."""
+        """Detect insecure deserialization via unserialize and related functions."""
         body = self._get_body(func)
         if not body:
             return
@@ -1009,7 +1030,8 @@ class PHPASTAnalyzer:
             func_name = node_text(name_node)
             line = get_node_line(call)
 
-            if func_name == "unserialize":
+            # --- Direct deserialization functions ---
+            if func_name in self.DESER_FUNCTIONS:
                 args = get_child_by_type(call, "arguments")
                 if not args:
                     continue
@@ -1019,23 +1041,228 @@ class PHPASTAnalyzer:
                 arg_text = node_text(first_arg)
 
                 if tracker.is_tainted(arg_text):
-                    # Check for allowed_classes option (2nd argument)
-                    all_args = self._get_all_args(args)
-                    has_allowed_classes = False
-                    if len(all_args) >= 2:
-                        second_text = node_text(all_args[1])
-                        if "allowed_classes" in second_text and "false" in second_text.lower():
-                            has_allowed_classes = True
+                    severity, confidence, desc = self.DESER_FUNCTIONS[func_name]
 
-                    if has_allowed_classes:
-                        pass  # allowed_classes=false mitigates object injection
-                    else:
+                    # unserialize-specific: check allowed_classes mitigation
+                    if func_name == "unserialize":
+                        all_args = self._get_all_args(args)
+                        if len(all_args) >= 2:
+                            second_text = node_text(all_args[1])
+                            if "allowed_classes" in second_text and "false" in second_text.lower():
+                                continue  # allowed_classes=false mitigates object injection
+
+                    self._add_finding(
+                        line, 0,
+                        f"Insecure Deserialization - {func_name}() with tainted input",
+                        VulnCategory.DESERIALIZATION, severity, confidence,
+                        tracker.get_taint_chain(arg_text), desc
+                    )
+
+            # --- json_decode without assoc=true ---
+            elif func_name == "json_decode":
+                args = get_child_by_type(call, "arguments")
+                if not args:
+                    continue
+                first_arg = self._get_first_arg(args)
+                if not first_arg:
+                    continue
+                arg_text = node_text(first_arg)
+
+                if tracker.is_tainted(arg_text):
+                    all_args = self._get_all_args(args)
+                    has_assoc_true = False
+                    if len(all_args) >= 2:
+                        second_text = node_text(all_args[1]).lower()
+                        if second_text == "true":
+                            has_assoc_true = True
+                    if not has_assoc_true:
                         self._add_finding(
                             line, 0,
-                            "Insecure Deserialization - unserialize() with tainted input",
-                            VulnCategory.DESERIALIZATION, Severity.CRITICAL, "HIGH",
+                            "Insecure Deserialization - json_decode() without assoc=true",
+                            VulnCategory.DESERIALIZATION, Severity.MEDIUM, "LOW",
                             tracker.get_taint_chain(arg_text),
-                            "User-controlled data in unserialize() allows arbitrary object injection."
+                            "json_decode() without assoc=true returns objects; prefer assoc arrays."
+                        )
+
+        # --- Second-order deserialization: DB-sourced data into deser functions ---
+        if tracker.db_sourced:
+            for call in func_calls:
+                name_node = get_child_by_type(call, "name")
+                if not name_node:
+                    continue
+                func_name = node_text(name_node)
+                if func_name not in self.DESER_FUNCTIONS:
+                    continue
+
+                args = get_child_by_type(call, "arguments")
+                if not args:
+                    continue
+                first_arg = self._get_first_arg(args)
+                if not first_arg:
+                    continue
+                arg_text = node_text(first_arg)
+
+                # Skip if already reported as directly tainted
+                if tracker.is_tainted(arg_text):
+                    continue
+
+                if tracker.is_db_sourced(arg_text):
+                    # unserialize-specific: check allowed_classes mitigation
+                    if func_name == "unserialize":
+                        all_args = self._get_all_args(args)
+                        if len(all_args) >= 2:
+                            second_text = node_text(all_args[1])
+                            if "allowed_classes" in second_text and "false" in second_text.lower():
+                                continue  # allowed_classes=false mitigates object injection
+
+                    line = get_node_line(call)
+                    self._add_finding(
+                        line, 0,
+                        f"Second-order Deserialization - DB data in {func_name}()",
+                        VulnCategory.DESERIALIZATION, Severity.HIGH, "MEDIUM",
+                        description=(
+                            f"Data fetched from database passed to {func_name}(). "
+                            f"If an attacker can control the stored data, this enables object injection."
+                        )
+                    )
+
+        # Check for phar:// deserialization
+        self._check_phar_deserialization(body, tracker)
+
+    # Filesystem functions that trigger phar:// metadata deserialization
+    PHAR_TRIGGER_FUNCS = {
+        "file_get_contents", "file_exists", "is_file", "is_dir", "fopen",
+        "file", "readfile", "copy", "stat", "lstat", "fileatime", "filectime",
+        "filemtime", "filesize", "getimagesize", "highlight_file", "show_source",
+        "parse_ini_file", "exif_thumbnail", "exif_imagetype",
+        "file_put_contents", "unlink", "rename", "mkdir",
+    }
+
+    def _check_phar_deserialization(self, body: Node, tracker: TaintTracker):
+        """Detect phar:// deserialization via tainted file operation paths."""
+        body_text = node_text(body)
+
+        # Mitigation: check if body validates against phar:// wrapper
+        has_phar_check = bool(re.search(
+            r'strpos\s*\(.*phar.*\).*(?:exit|return|throw|die)',
+            body_text, re.DOTALL | re.IGNORECASE
+        )) or bool(re.search(
+            r'str_starts_with\s*\(.*phar.*\).*(?:exit|return|throw|die)',
+            body_text, re.DOTALL | re.IGNORECASE
+        ))
+        if has_phar_check:
+            return
+
+        # Check filesystem functions with tainted path arguments
+        func_calls = find_nodes(body, "function_call_expression")
+        for call in func_calls:
+            name_node = get_child_by_type(call, "name")
+            if not name_node:
+                continue
+            func_name = node_text(name_node)
+            if func_name not in self.PHAR_TRIGGER_FUNCS:
+                continue
+
+            args = get_child_by_type(call, "arguments")
+            if not args:
+                continue
+            first_arg = self._get_first_arg(args)
+            if not first_arg:
+                continue
+            arg_text = node_text(first_arg)
+
+            if tracker.is_tainted(arg_text):
+                line = get_node_line(call)
+                self._add_finding(
+                    line, 0,
+                    f"Phar Deserialization - {func_name}() with tainted path",
+                    VulnCategory.DESERIALIZATION, Severity.CRITICAL, "MEDIUM",
+                    tracker.get_taint_chain(arg_text),
+                    f"Tainted path in {func_name}() can trigger phar:// metadata deserialization."
+                )
+
+        # Check include/require with tainted paths (also triggers phar deserialization)
+        include_nodes = find_nodes_multi(body, {
+            "include_expression", "include_once_expression",
+            "require_expression", "require_once_expression",
+        })
+        for inc_node in include_nodes:
+            # The included path is typically the last child (after the keyword)
+            for child in inc_node.children:
+                if child.type in ("include", "include_once", "require", "require_once",
+                                  "(", ")", ";"):
+                    continue
+                inc_text = node_text(child)
+                if tracker.is_tainted(inc_text):
+                    line = get_node_line(inc_node)
+                    keyword = inc_node.type.replace("_expression", "").replace("_", " ")
+                    self._add_finding(
+                        line, 0,
+                        f"Phar Deserialization - {keyword} with tainted path",
+                        VulnCategory.DESERIALIZATION, Severity.CRITICAL, "MEDIUM",
+                        tracker.get_taint_chain(inc_text),
+                        f"Tainted path in {keyword} can trigger phar:// metadata deserialization."
+                    )
+                break  # only check first non-keyword child
+
+    # ========================================================================
+    # Gadget Chain Indicator Detection (class-level)
+    # ========================================================================
+
+    MAGIC_METHODS = {
+        "__wakeup", "__destruct", "__toString", "__call", "__callStatic",
+        "__get", "__set", "__isset", "__unset", "__invoke",
+    }
+
+    DANGEROUS_FUNCTIONS = {
+        "exec", "system", "passthru", "shell_exec", "popen", "proc_open",
+        "eval", "assert", "create_function", "unlink", "file_put_contents",
+        "fwrite", "call_user_func", "call_user_func_array", "mail",
+        "preg_replace", "pcntl_exec", "putenv", "apache_setenv",
+    }
+
+    def _check_gadget_methods(self):
+        """Scan class declarations for magic methods containing dangerous operations.
+
+        This is an advisory-level check that identifies potential gadget chain
+        entry points — classes whose magic methods invoke dangerous functions.
+        """
+        classes = find_nodes(self.root, "class_declaration")
+        for cls in classes:
+            cls_name_node = get_child_by_type(cls, "name")
+            cls_name = node_text(cls_name_node) if cls_name_node else "<anonymous>"
+
+            decl_list = get_child_by_type(cls, "declaration_list")
+            if not decl_list:
+                continue
+
+            for method in find_nodes(decl_list, "method_declaration"):
+                method_name = self._get_func_name(method)
+                if method_name not in self.MAGIC_METHODS:
+                    continue
+
+                method_body = get_child_by_type(method, "compound_statement")
+                if not method_body:
+                    continue
+
+                # Search for dangerous function calls within the magic method
+                inner_calls = find_nodes(method_body, "function_call_expression")
+                for call in inner_calls:
+                    call_name_node = get_child_by_type(call, "name")
+                    if not call_name_node:
+                        continue
+                    call_name = node_text(call_name_node)
+                    if call_name in self.DANGEROUS_FUNCTIONS:
+                        line = get_node_line(call)
+                        self._add_finding(
+                            line, 0,
+                            f"Gadget Chain Indicator - {cls_name}::{method_name}() calls {call_name}()",
+                            VulnCategory.DESERIALIZATION, Severity.LOW, "LOW",
+                            description=(
+                                f"Magic method {method_name}() in class {cls_name} calls "
+                                f"dangerous function {call_name}(). This class could be used "
+                                f"as a gadget in a deserialization attack chain."
+                            )
                         )
 
     # ========================================================================
@@ -1320,7 +1547,7 @@ class PHPASTAnalyzer:
                 continue
             all_args = self._get_all_args(args)
             query_arg = None
-            if func_name == "mysqli_query" and len(all_args) >= 2:
+            if func_name in ("mysqli_query", "pg_query") and len(all_args) >= 2:
                 query_arg = all_args[1]
             elif all_args:
                 query_arg = all_args[0]
@@ -1385,7 +1612,7 @@ class PHPASTAnalyzer:
                 if args:
                     all_args = self._get_all_args(args)
                     query_arg = None
-                    if func_name == "mysqli_query" and len(all_args) >= 2:
+                    if func_name in ("mysqli_query", "pg_query") and len(all_args) >= 2:
                         query_arg = all_args[1]
                     elif all_args:
                         query_arg = all_args[0]
