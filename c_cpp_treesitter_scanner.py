@@ -726,8 +726,9 @@ def _is_for_loop_iterator(node: Node, var_name: str) -> bool:
 def _build_alloc_size_map(func_body: Node) -> Dict[str, str]:
     """Build a map of variable_name -> allocation size base variable.
     For patterns like: buf = malloc(n + 1), records buf -> "n".
-    For patterns like: buf = malloc(n * sizeof(int)), records buf -> "n".
-    Used to suppress FP when buf[n] is accessed after malloc(n + K)."""
+    Used to suppress FP when buf[n] is accessed after malloc(n + K).
+    Only records when the expression uses '+' (indicating padding beyond n).
+    Multiplication (n * sizeof(...)) does NOT record — arr[n] would be OOB."""
     alloc_map: Dict[str, str] = {}
     for decl in find_nodes(func_body, "declaration"):
         for init in find_nodes(decl, "init_declarator"):
@@ -753,10 +754,14 @@ def _build_alloc_size_map(func_body: Node) -> Dict[str, str]:
             if not args:
                 continue
             size_arg = args[0]
-            # Extract the base variable from size expressions like "n + 1", "n * sizeof(...)"
+            # Only extract from addition expressions: n + 1, n + K
+            # This means buf[n] is safe because allocation is n + K bytes.
+            # Do NOT extract from multiplication: n * sizeof(int) — arr[n] would be OOB.
             if size_arg.type == "binary_expression":
-                ops = [c for c in size_arg.children if c.type in ("+", "*")]
-                operands = [c for c in size_arg.children if c.type not in ("+", "*")]
+                ops = [c for c in size_arg.children if c.type == "+"]
+                if not ops:
+                    continue  # Skip multiplication/subtraction expressions
+                operands = [c for c in size_arg.children if c.type != "+"]
                 for op in operands:
                     if is_identifier(op) and get_node_text(op) != "sizeof":
                         lhs = children[0]
@@ -1202,10 +1207,15 @@ def rule_return_local_addr(tree: Node, source_bytes: bytes, filename: str) -> Ge
                 for ident in find_nodes(pexpr, "identifier"):
                     if get_node_text(ident) not in local_vars:
                         continue
-                    # Skip &ptr->member — this is address of a heap struct member, not the local pointer
+                    # Skip &ptr->member — this is address of a heap struct member, not the local pointer.
+                    # But do NOT skip &local.field — the local struct IS on the stack.
                     ident_parent = ident.parent
                     if ident_parent and ident_parent.type == "field_expression":
-                        continue
+                        # Check if this is -> (heap pointer deref) or . (direct struct access)
+                        has_arrow = any(c.type == "->" for c in ident_parent.children)
+                        if has_arrow:
+                            continue
+                        # For '.', the struct is stack-local — don't skip, fall through to report
                     if get_node_text(ident) in local_vars:
                         line, col = node_location(ret)
                         yield Finding(
@@ -1233,9 +1243,16 @@ def rule_dangling_ptr_return(tree: Node, source_bytes: bytes, filename: str) -> 
         if not body:
             continue
 
-        # Step 1: Collect local variable names (non-pointer, non-heap declarations)
+        # Step 1: Collect local variable names (non-pointer, non-heap, non-static declarations)
         local_vars: Set[str] = set()
         for decl in find_nodes(body, "declaration"):
+            # Skip declarations with 'static' storage class — static vars have permanent storage
+            has_static = any(
+                get_node_text(c) == "static"
+                for c in decl.children if c.type == "storage_class_specifier"
+            )
+            if has_static:
+                continue
             for child in decl.children:
                 name = _extract_declarator_name(child)
                 if name:
@@ -1429,6 +1446,8 @@ def _find_first_deref(compound: Node, var_name: str, after_byte: int) -> Optiona
                 candidates.append(call)
                 break
 
+    # Filter out candidates inside sizeof expressions (compile-time, not runtime)
+    candidates = [c for c in candidates if not _has_ancestor_type(c, "sizeof_expression")]
     # Filter out candidates inside ternary guards (e.g., buf ? buf[0] : 0)
     candidates = [c for c in candidates if not _is_inside_ternary_guard(c, var_name)]
 
