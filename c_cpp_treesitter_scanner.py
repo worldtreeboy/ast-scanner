@@ -450,11 +450,89 @@ def rule_unsafe_copy(tree: Node, source_bytes: bytes, filename: str) -> Generato
 
 # --- Rule 2: Potential buffer overflow (suspicious array index) ---------------
 
+def _is_for_loop_iterator(node: Node, var_name: str) -> bool:
+    """Check if var_name is the iterator of a for loop enclosing this node.
+    Looks for patterns like: for(i=0; i<n; i++) or for(int i=0; i<n; i++)."""
+    current = node.parent
+    while current:
+        if current.type == "for_statement":
+            # Check if var_name appears in the for's condition (comparison with bound)
+            children = current.children
+            # for_statement children: 'for' '(' init ';' condition ';' update ')' body
+            # In tree-sitter, the condition is typically a binary_expression
+            for child in children:
+                if child.type == "binary_expression":
+                    ops = [c for c in child.children if c.type in ("<", "<=", ">", ">=", "!=")]
+                    if ops:
+                        operands = [c for c in child.children if c != ops[0]]
+                        for op in operands:
+                            if is_identifier(op) and get_node_text(op) == var_name:
+                                return True
+        current = current.parent
+    return False
+
+
+def _build_alloc_size_map(func_body: Node) -> Dict[str, str]:
+    """Build a map of variable_name -> allocation size base variable.
+    For patterns like: buf = malloc(n + 1), records buf -> "n".
+    For patterns like: buf = malloc(n * sizeof(int)), records buf -> "n".
+    Used to suppress FP when buf[n] is accessed after malloc(n + K)."""
+    alloc_map: Dict[str, str] = {}
+    for decl in find_nodes(func_body, "declaration"):
+        for init in find_nodes(decl, "init_declarator"):
+            children = init.children
+            if len(children) < 3:
+                continue
+            rhs = children[-1]
+            # Unwrap cast: (char*)malloc(...)
+            call_node = None
+            if rhs.type == "call_expression":
+                call_node = rhs
+            elif rhs.type == "cast_expression":
+                for child in rhs.children:
+                    if child.type == "call_expression":
+                        call_node = child
+                        break
+            if not call_node:
+                continue
+            fname = get_call_name(call_node)
+            if fname not in {"malloc", "calloc", "realloc", "aligned_alloc", "valloc"}:
+                continue
+            args = get_call_args(call_node)
+            if not args:
+                continue
+            size_arg = args[0]
+            # Extract the base variable from size expressions like "n + 1", "n * sizeof(...)"
+            if size_arg.type == "binary_expression":
+                ops = [c for c in size_arg.children if c.type in ("+", "*")]
+                operands = [c for c in size_arg.children if c.type not in ("+", "*")]
+                for op in operands:
+                    if is_identifier(op) and get_node_text(op) != "sizeof":
+                        lhs = children[0]
+                        var_names = [get_node_text(i) for i in find_nodes(lhs, "identifier")]
+                        if var_names:
+                            alloc_map[var_names[-1]] = get_node_text(op)
+                        break
+            elif is_identifier(size_arg):
+                lhs = children[0]
+                var_names = [get_node_text(i) for i in find_nodes(lhs, "identifier")]
+                if var_names:
+                    alloc_map[var_names[-1]] = get_node_text(size_arg)
+    return alloc_map
+
+
 def rule_buffer_oob(tree: Node, source_bytes: bytes, filename: str) -> Generator[Finding, None, None]:
     """MEM-BUFFER-OOB: Writes to arrays via index where index is not obviously bounded.
     Heuristic: flag subscript_expression inside assignment LHS where index is a variable
     (not a small constant). This is conservative and will have false positives on
     well-bounded loops."""
+    # Pre-build allocation size map per function to suppress FP like buf[n] after malloc(n+1)
+    func_alloc_maps: Dict[int, Dict[str, str]] = {}
+    for func in find_nodes_multi(tree, {"function_definition"}):
+        body = get_child_by_type(func, "compound_statement")
+        if body:
+            func_alloc_maps[func.start_byte] = _build_alloc_size_map(body)
+
     for sub in find_nodes(tree, "subscript_expression"):
         # Check if this subscript is the target of an assignment (write)
         parent = sub.parent
@@ -472,8 +550,10 @@ def rule_buffer_oob(tree: Node, source_bytes: bytes, filename: str) -> Generator
         children = [c for c in sub.children if c.type not in ("[", "]")]
         if len(children) < 2:
             continue
+        array_node = children[0]
         index_node = children[1]
         index_text = get_node_text(index_node)
+        array_text = get_node_text(array_node)
 
         # Skip if index is a small non-negative constant
         if is_number_literal(index_node):
@@ -483,6 +563,18 @@ def rule_buffer_oob(tree: Node, source_bytes: bytes, filename: str) -> Generator
                     continue
             except ValueError:
                 pass
+
+        # Skip if index is a for-loop iterator (bounded by the loop condition)
+        if is_identifier(index_node) and _is_for_loop_iterator(sub, index_text):
+            continue
+
+        # Skip if array was allocated with malloc(index_var + K) — index is within bounds
+        if is_identifier(index_node):
+            enclosing_func = find_enclosing_function(sub)
+            if enclosing_func:
+                alloc_map = func_alloc_maps.get(enclosing_func.start_byte, {})
+                if alloc_map.get(array_text) == index_text:
+                    continue
 
         # Flag if index is a variable or complex expression
         if is_identifier(index_node) or index_node.type in ("binary_expression", "call_expression"):
@@ -559,24 +651,54 @@ def rule_use_after_free(tree: Node, source_bytes: bytes, filename: str) -> Gener
         body = get_child_by_type(func, "compound_statement")
         if not body:
             continue
+
+        # Build alias map: alias_name -> original_name (e.g., q = p means alias_map["q"] = "p")
+        # Also build reverse map: original -> [aliases]
+        alias_map: Dict[str, str] = {}
+        for decl in find_nodes(body, "declaration"):
+            for init in find_nodes(decl, "init_declarator"):
+                children = init.children
+                if len(children) < 3:
+                    continue
+                rhs = children[-1]
+                if is_identifier(rhs):
+                    lhs = children[0]
+                    lhs_names = [get_node_text(i) for i in find_nodes(lhs, "identifier")]
+                    if lhs_names:
+                        alias_map[lhs_names[-1]] = get_node_text(rhs)
+        # Also track assignment-based aliases: q = p;
+        for assign in find_nodes(body, "assignment_expression"):
+            children = assign.children
+            if len(children) >= 3 and children[1].type == "=":
+                lhs, rhs = children[0], children[-1]
+                if is_identifier(lhs) and is_identifier(rhs):
+                    alias_map[get_node_text(lhs)] = get_node_text(rhs)
+
         frees = _collect_free_and_delete(body)
+        reported_uses: Set[int] = set()  # track byte offsets of already-reported uses
         for var_name, free_byte, free_node in frees:
-            use = _identifier_used_after(body, var_name, free_byte)
-            if use:
-                line, col = node_location(use)
-                free_line = node_location(free_node)[0]
-                yield Finding(
-                    file_path=filename, line_number=line, col_offset=col,
-                    line_content=get_source_line(source_bytes, line),
-                    vulnerability_name=f"Potential use-after-free: '{var_name}' freed at line {free_line}",
-                    rule_id="MEM-USE-AFTER-FREE",
-                    category=VulnCategory.MEMORY_SAFETY,
-                    severity=Severity.CRITICAL,
-                    confidence="MEDIUM",
-                    evidence=f"free({var_name}) at line {free_line}, used at line {line}",
-                    description="Pointer used after being freed. This can lead to arbitrary code execution.",
-                )
-                break  # one finding per free
+            # Check the freed variable itself and all its aliases
+            names_to_check = [var_name] + [k for k, v in alias_map.items() if v == var_name]
+            for check_name in names_to_check:
+                use = _identifier_used_after(body, check_name, free_byte)
+                if use and use.start_byte not in reported_uses and \
+                        not _is_reassigned_between(body, check_name, free_byte, use.start_byte):
+                    line, col = node_location(use)
+                    free_line = node_location(free_node)[0]
+                    via = f" (via alias '{check_name}')" if check_name != var_name else ""
+                    yield Finding(
+                        file_path=filename, line_number=line, col_offset=col,
+                        line_content=get_source_line(source_bytes, line),
+                        vulnerability_name=f"Potential use-after-free: '{var_name}' freed at line {free_line}{via}",
+                        rule_id="MEM-USE-AFTER-FREE",
+                        category=VulnCategory.MEMORY_SAFETY,
+                        severity=Severity.CRITICAL,
+                        confidence="MEDIUM",
+                        evidence=f"free({var_name}) at line {free_line}, {check_name} used at line {line}",
+                        description="Pointer used after being freed. This can lead to arbitrary code execution.",
+                    )
+                    reported_uses.add(use.start_byte)
+                    break  # one finding per (free, name) pair
 
 
 # --- Rule 4: Double free (heuristic) -----------------------------------------
@@ -643,9 +765,16 @@ def rule_return_local_addr(tree: Node, source_bytes: bytes, filename: str) -> Ge
         body = get_child_by_type(func, "compound_statement")
         if not body:
             continue
-        # Collect local variable names declared in this function
+        # Collect local variable names declared in this function (skip static)
         local_vars: Set[str] = set()
         for decl in find_nodes(body, "declaration"):
+            # Skip declarations with 'static' storage class — static vars have permanent storage
+            has_static = any(
+                get_node_text(c) == "static"
+                for c in decl.children if c.type == "storage_class_specifier"
+            )
+            if has_static:
+                continue
             for ident in find_nodes(decl, "identifier"):
                 local_vars.add(get_node_text(ident))
             for arr in find_nodes(decl, "array_declarator"):
@@ -659,7 +788,18 @@ def rule_return_local_addr(tree: Node, source_bytes: bytes, filename: str) -> Ge
                 has_ampersand = any(c.type == "&" for c in pexpr.children)
                 if not has_ampersand:
                     continue
+                # Skip if &local is inside a function call (return(func(&local,...)))
+                # — the function's return value is returned, not the address
+                parent_of_pexpr = pexpr.parent
+                if parent_of_pexpr and parent_of_pexpr.type == "argument_list":
+                    continue
                 for ident in find_nodes(pexpr, "identifier"):
+                    if get_node_text(ident) not in local_vars:
+                        continue
+                    # Skip &ptr->member — this is address of a heap struct member, not the local pointer
+                    ident_parent = ident.parent
+                    if ident_parent and ident_parent.type == "field_expression":
+                        continue
                     if get_node_text(ident) in local_vars:
                         line, col = node_location(ret)
                         yield Finding(
@@ -803,12 +943,16 @@ def rule_dangling_ptr_return(tree: Node, source_bytes: bytes, filename: str) -> 
 ALLOC_FUNCS = {"malloc", "calloc", "realloc", "aligned_alloc", "valloc", "pvalloc"}
 
 
-def _has_null_check_before_use(compound: Node, var_name: str, alloc_byte: int) -> bool:
+def _has_null_check_before_use(compound: Node, var_name: str, alloc_byte: int,
+                               before_byte: int = None) -> bool:
     """Heuristic: check if there's an if-statement checking var_name for NULL/0
-    between the allocation and the first dereference."""
+    between the allocation and the first dereference.
+    If before_byte is given, only consider checks that appear before that byte offset."""
     # Look for if(...var_name...) or if(!var_name) patterns
     for if_stmt in find_nodes(compound, "if_statement"):
         if if_stmt.start_byte <= alloc_byte:
+            continue
+        if before_byte is not None and if_stmt.start_byte >= before_byte:
             continue
         cond = get_child_by_type(if_stmt, "parenthesized_expression")
         if cond and var_name in get_node_text(cond):
@@ -816,6 +960,24 @@ def _has_null_check_before_use(compound: Node, var_name: str, alloc_byte: int) -
         cond2 = get_child_by_type(if_stmt, "condition_clause")
         if cond2 and var_name in get_node_text(cond2):
             return True
+    return False
+
+
+def _is_inside_ternary_guard(node: Node, var_name: str) -> bool:
+    """Check if node is inside the 'true' or 'false' branch of a ternary
+    (conditional_expression) where var_name is the condition.
+    e.g., 'buf ? buf[0] : 0' — the subscript buf[0] is guarded by the condition."""
+    current = node.parent
+    while current:
+        if current.type == "conditional_expression":
+            children = [c for c in current.children if c.type not in ("?", ":")]
+            if len(children) >= 1:
+                condition = children[0]
+                cond_text = get_node_text(condition)
+                # Condition is the variable itself, or a comparison involving it
+                if cond_text == var_name or var_name in cond_text.split():
+                    return True
+        current = current.parent
     return False
 
 
@@ -860,6 +1022,9 @@ def _find_first_deref(compound: Node, var_name: str, after_byte: int) -> Optiona
                     continue
                 candidates.append(call)
                 break
+
+    # Filter out candidates inside ternary guards (e.g., buf ? buf[0] : 0)
+    candidates = [c for c in candidates if not _is_inside_ternary_guard(c, var_name)]
 
     if not candidates:
         return None
@@ -932,13 +1097,8 @@ def rule_null_deref(tree: Node, source_bytes: bytes, filename: str) -> Generator
             # Check all names (original + aliases) for NULL checks and derefs
             names_to_check = [var_name] + [k for k, v in alias_map.items() if v == var_name]
 
-            has_null_check = any(
-                _has_null_check_before_use(body, n, alloc_byte) for n in names_to_check
-            )
-            if has_null_check:
-                continue
-
-            # Find first deref across original and aliases
+            # Find first deref across original and aliases FIRST,
+            # then check if there's a NULL guard between alloc and that deref.
             first_deref = None
             deref_name = var_name
             for n in names_to_check:
@@ -946,6 +1106,17 @@ def rule_null_deref(tree: Node, source_bytes: bytes, filename: str) -> Generator
                 if d and (first_deref is None or d.start_byte < first_deref.start_byte):
                     first_deref = d
                     deref_name = n
+
+            if not first_deref:
+                continue
+
+            # Only count NULL checks that appear BETWEEN alloc and first deref
+            has_null_check = any(
+                _has_null_check_before_use(body, n, alloc_byte, before_byte=first_deref.start_byte)
+                for n in names_to_check
+            )
+            if has_null_check:
+                continue
 
             if first_deref:
                 line, col = node_location(first_deref)
@@ -1034,6 +1205,72 @@ def rule_pointer_arith(tree: Node, source_bytes: bytes, filename: str) -> Genera
                             description="Dereferencing pointer with computed offset. "
                                         "Ensure the offset is bounds-checked.",
                         )
+
+    # --- Sub-rule: ptr += N; ... *ptr = val; (pointer increment then dereference) ---
+    for func in find_nodes_multi(tree, {"function_definition"}):
+        body = get_child_by_type(func, "compound_statement")
+        if not body:
+            continue
+
+        # Track pointer variables advanced via compound assignment (ptr += expr)
+        # or plain assignment (ptr = ptr + expr)
+        advanced_ptrs: Dict[str, Tuple[int, Node, str]] = {}  # name -> (byte, node, offset_text)
+
+        for assign in find_nodes(body, "assignment_expression"):
+            children = assign.children
+            if len(children) < 3:
+                continue
+            lhs = children[0]
+            op_node = children[1] if len(children) > 1 else None
+            rhs = children[-1]
+            if not op_node:
+                continue
+            op_text = get_node_text(op_node)
+
+            # Pattern A: ptr += expr
+            if op_text == "+=" and is_identifier(lhs):
+                ptr_name = get_node_text(lhs)
+                advanced_ptrs[ptr_name] = (assign.start_byte, assign, get_node_text(rhs))
+            # Pattern B: ptr = ptr + expr
+            elif op_text == "=" and is_identifier(lhs) and rhs.type == "binary_expression":
+                ptr_name = get_node_text(lhs)
+                rhs_ops = [c for c in rhs.children if c.type in ("+",)]
+                rhs_operands = [c for c in rhs.children if c.type not in ("+",)]
+                if rhs_ops and len(rhs_operands) == 2:
+                    for i, op in enumerate(rhs_operands):
+                        if is_identifier(op) and get_node_text(op) == ptr_name:
+                            other = rhs_operands[1 - i]
+                            advanced_ptrs[ptr_name] = (assign.start_byte, assign, get_node_text(other))
+                            break
+
+        # Check if any advanced pointer is subsequently dereferenced: *ptr
+        for ptr_name, (adv_byte, adv_node, offset_text) in advanced_ptrs.items():
+            for pexpr in find_nodes(body, "pointer_expression"):
+                if pexpr.start_byte <= adv_byte:
+                    continue
+                has_star = any(c.type == "*" for c in pexpr.children)
+                if not has_star:
+                    continue
+                for child in pexpr.children:
+                    if is_identifier(child) and get_node_text(child) == ptr_name:
+                        # Check the pointer wasn't reassigned between advance and deref
+                        if _is_reassigned_between(body, ptr_name, adv_byte, pexpr.start_byte):
+                            continue
+                        line, col = node_location(pexpr)
+                        adv_line = node_location(adv_node)[0]
+                        yield Finding(
+                            file_path=filename, line_number=line, col_offset=col,
+                            line_content=get_source_line(source_bytes, line),
+                            vulnerability_name=f"Pointer arithmetic: '{ptr_name}' advanced by {offset_text} (line {adv_line}) then dereferenced",
+                            rule_id="PTR-ARITH",
+                            category=VulnCategory.POINTER_ARRAY,
+                            severity=Severity.MEDIUM,
+                            confidence="MEDIUM",
+                            evidence=f"{ptr_name} += {offset_text} at line {adv_line}, *{ptr_name} at line {line}",
+                            description=f"Pointer '{ptr_name}' is advanced by '{offset_text}' then dereferenced. "
+                                        "If the offset exceeds the buffer bounds, this causes memory corruption.",
+                        )
+                        break  # one finding per deref
 
 
 # --- Rule 8: Out-of-bounds risk: negative constant or subtraction in index ----
@@ -1217,6 +1454,9 @@ def rule_narrowing(tree: Node, source_bytes: bytes, filename: str) -> Generator[
             dst_width = type_width(dst_type)
             if dst_width == 0:
                 continue
+            # Skip char-width and float destinations — too noisy for real codebases
+            if dst_width == 8 or dst_type == "float":
+                continue
             for init in find_nodes(decl, "init_declarator"):
                 children = init.children
                 if len(children) < 3:
@@ -1246,10 +1486,20 @@ def rule_narrowing(tree: Node, source_bytes: bytes, filename: str) -> Generator[
                 continue
             cast_type_node = get_child_by_type(type_desc, "primitive_type")
             if not cast_type_node:
+                # tree-sitter parses 'short', 'long', etc. as sized_type_specifier
+                cast_type_node = get_child_by_type(type_desc, "sized_type_specifier")
+            if not cast_type_node:
                 continue
             dst_type = get_node_text(cast_type_node)
             dst_width = type_width(dst_type)
             if dst_width == 0:
+                continue
+            # Skip casts to char/unsigned char — almost always intentional byte operations
+            # e.g., (unsigned char) ReadBlobByte(), (char) c
+            if dst_width == 8:
+                continue
+            # Skip float←double casts — intentional precision reduction, not a vulnerability
+            if dst_type == "float":
                 continue
             # The casted expression
             operand = cast.children[-1] if cast.children else None
