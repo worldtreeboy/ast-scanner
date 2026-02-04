@@ -832,8 +832,26 @@ def rule_buffer_oob(tree: Node, source_bytes: bytes, filename: str) -> Generator
                 if alloc_map.get(array_text) == index_text:
                     continue
 
+        # Suppress bitwise-AND masked indices: arr[idx & 0xFF] is bounded
+        if index_node.type == "binary_expression":
+            has_bitand = any(c.type == "&" for c in index_node.children)
+            if has_bitand:
+                # Check if one operand is a number literal (mask)
+                has_const = any(is_number_literal(c) for c in index_node.children)
+                if has_const:
+                    continue
+
+        # Suppress modulo-bounded indices: arr[idx % size] is bounded
+        if index_node.type == "binary_expression":
+            has_modulo = any(get_node_text(c) == "%" for c in index_node.children)
+            if has_modulo:
+                continue
+
         # Flag if index is a variable or complex expression
-        if is_identifier(index_node) or index_node.type in ("binary_expression", "call_expression"):
+        if is_identifier(index_node) or index_node.type in (
+            "binary_expression", "call_expression", "conditional_expression",
+            "update_expression", "parenthesized_expression",
+        ):
             line, col = node_location(sub)
             yield Finding(
                 file_path=filename, line_number=line, col_offset=col,
@@ -978,8 +996,17 @@ def _collect_free_and_delete(compound: Node) -> List[Tuple[str, int, Node]]:
         name = get_call_name(call)
         if name in FREE_LIKE_FUNCS:
             args = get_call_args(call)
-            if args and is_identifier(args[0]):
-                results.append((get_node_text(args[0]), call.start_byte, call))
+            if args:
+                arg0 = args[0]
+                # Unwrap cast expressions: free((void*)p) → extract p
+                if arg0.type == "cast_expression":
+                    inner_ids = [c for c in arg0.children if is_identifier(c)]
+                    if not inner_ids:
+                        inner_ids = list(find_nodes(arg0, "identifier"))
+                    if inner_ids:
+                        arg0 = inner_ids[0]
+                if is_identifier(arg0):
+                    results.append((get_node_text(arg0), call.start_byte, call))
     # Also check delete_expression (C++)
     for dexpr in find_nodes(compound, "delete_expression"):
         for child in dexpr.children:
@@ -1152,9 +1179,14 @@ def rule_double_free(tree: Node, source_bytes: bytes, filename: str) -> Generato
             for i in range(len(free_list) - 1):
                 byte1, node1 = free_list[i]
                 byte2, node2 = free_list[i + 1]
-                if not _is_reassigned_between(body, var_name, byte1, byte2):
-                    line2, col2 = node_location(node2)
-                    line1 = node_location(node1)[0]
+                if _is_reassigned_between(body, var_name, byte1, byte2):
+                    continue
+                # Suppress if first free is in a returning branch (e.g., if(err){free(p);return;})
+                if _free_is_in_returning_branch(node1, node2):
+                    continue
+                line2, col2 = node_location(node2)
+                line1 = node_location(node1)[0]
+                if True:
                     yield Finding(
                         file_path=filename, line_number=line2, col_offset=col2,
                         line_content=get_source_line(source_bytes, line2),
@@ -1191,6 +1223,25 @@ def rule_return_local_addr(tree: Node, source_bytes: bytes, filename: str) -> Ge
             for arr in find_nodes(decl, "array_declarator"):
                 for ident in find_nodes(arr, "identifier"):
                     local_vars.add(get_node_text(ident))
+
+        # Also collect function parameter names (by-value params are stack-local)
+        declarator = get_child_by_type(func, "function_declarator")
+        if not declarator:
+            declarator = get_child_by_type(func, "pointer_declarator")
+            if declarator:
+                declarator = get_child_by_type(declarator, "function_declarator")
+        if declarator:
+            param_list = get_child_by_type(declarator, "parameter_list")
+            if param_list:
+                for pdecl in find_nodes(param_list, "parameter_declaration"):
+                    # Skip pointer parameters — &param for a pointer param returns
+                    # the address of the local copy, but it's less common to flag
+                    has_pointer = any(c.type == "pointer_declarator" or c.type == "abstract_pointer_declarator"
+                                      for c in pdecl.children)
+                    if has_pointer:
+                        continue
+                    for ident in find_nodes(pdecl, "identifier"):
+                        local_vars.add(get_node_text(ident))
 
         # Find return statements with & (address-of)
         for ret in find_nodes(body, "return_statement"):
@@ -2144,6 +2195,31 @@ def rule_unvalidated_size(tree: Node, source_bytes: bytes, filename: str) -> Gen
         if not converted_vars:
             continue
 
+        # Step 1b: Track intermediate variable propagation
+        # Pattern: raw = ntohl(...); len = raw; → len is also tainted
+        for assign in find_nodes(body, "assignment_expression"):
+            children = assign.children
+            if len(children) >= 3:
+                lhs = children[0]
+                rhs = children[-1]
+                if is_identifier(lhs) and is_identifier(rhs):
+                    rhs_name = get_node_text(rhs)
+                    lhs_name = get_node_text(lhs)
+                    if rhs_name in converted_vars and lhs_name not in converted_vars:
+                        converted_vars[lhs_name] = converted_vars[rhs_name]
+        # Also check init_declarator propagation: uint32_t len = raw;
+        for decl in find_nodes(body, "declaration"):
+            for init in find_nodes(decl, "init_declarator"):
+                if len(init.children) < 3:
+                    continue
+                rhs = init.children[-1]
+                if is_identifier(rhs):
+                    rhs_name = get_node_text(rhs)
+                    if rhs_name in converted_vars:
+                        var_name = _extract_declarator_name(init)
+                        if var_name and var_name not in converted_vars:
+                            converted_vars[var_name] = converted_vars[rhs_name]
+
         # Step 2: Find memcpy/memdup/memmove calls where a converted variable
         # appears in the size argument (or in an expression containing it)
         for call in find_nodes(body, "call_expression"):
@@ -2174,6 +2250,40 @@ def rule_unvalidated_size(tree: Node, source_bytes: bytes, filename: str) -> Gen
                         has_check = True
                         break
                 if has_check:
+                    continue
+
+                # Check if the variable was clamped via bitwise AND or ternary
+                # between conversion and use
+                is_clamped = False
+                for assign in find_nodes(body, "assignment_expression"):
+                    if assign.start_byte <= cv_byte or assign.start_byte >= call.start_byte:
+                        continue
+                    a_children = assign.children
+                    if len(a_children) < 2:
+                        continue
+                    lhs_text = get_node_text(a_children[0])
+                    # Check compound assignment: len &= 0xFFF
+                    if len(a_children) >= 2:
+                        op_node = a_children[1] if len(a_children) >= 3 else None
+                        if op_node and get_node_text(op_node) == "&=":
+                            if lhs_text == cv_name:
+                                is_clamped = True
+                                break
+                    # Check ternary clamp: len = (len > MAX) ? MAX : len
+                    rhs = a_children[-1]
+                    if rhs.type == "conditional_expression" and lhs_text == cv_name:
+                        cond_text = get_node_text(rhs)
+                        if cv_name in cond_text:
+                            is_clamped = True
+                            break
+                    # Check bitwise AND assignment: len = len & 0xFFF
+                    if rhs.type == "binary_expression" and lhs_text == cv_name:
+                        has_bitand = any(get_node_text(c) == "&" for c in rhs.children)
+                        has_const = any(is_number_literal(c) for c in rhs.children)
+                        if has_bitand and has_const:
+                            is_clamped = True
+                            break
+                if is_clamped:
                     continue
 
                 line, col = node_location(call)
