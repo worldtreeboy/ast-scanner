@@ -595,12 +595,132 @@ def rule_buffer_oob(tree: Node, source_bytes: bytes, filename: str) -> Generator
 
 # --- Rule 3: Use-after-free (heuristic) --------------------------------------
 
+# Functions that deallocate memory (free() and common wrappers/macros).
+# Tree-sitter parses raw source, so macro names appear as call_expression.
+FREE_LIKE_FUNCS = {
+    "free",
+    # POSIX / libc
+    "cfree",
+    # GLib
+    "g_free", "g_slice_free",
+    # Linux kernel
+    "kfree", "vfree", "kzfree", "kvfree",
+    # Common project conventions
+    "xfree", "safe_free", "safefree",
+    # FFmpeg / libav
+    "av_free", "av_freep",
+    # OpenSSL / crypto
+    "OPENSSL_free", "CRYPTO_free",
+    # libxml2
+    "xmlFree",
+    # Talloc
+    "talloc_free",
+    # Win32
+    "HeapFree", "GlobalFree", "LocalFree",
+    "CoTaskMemFree", "SysFreeString",
+}
+
+
+def _has_ancestor_type(node: Node, ancestor_type: str) -> bool:
+    """Check if any ancestor of node has the given type."""
+    cur = node.parent
+    while cur:
+        if cur.type == ancestor_type:
+            return True
+        cur = cur.parent
+    return False
+
+
+def _node_contains(ancestor: Node, descendant: Node) -> bool:
+    """Check if descendant is within ancestor's byte range."""
+    return (ancestor.start_byte <= descendant.start_byte and
+            ancestor.end_byte >= descendant.end_byte)
+
+
+def _are_in_exclusive_branches(free_node: Node, use_node: Node) -> bool:
+    """Check if free_node and use_node are in mutually exclusive if/else branches.
+    Returns True if one is in the 'if' body and the other in the 'else' body
+    of the same if_statement."""
+    cur = free_node.parent
+    while cur:
+        if cur.type == "compound_statement":
+            parent = cur.parent
+            if parent and parent.type == "if_statement":
+                # free is in the 'then' branch — check if use is in the else clause
+                else_clause = get_child_by_type(parent, "else_clause")
+                if else_clause and _node_contains(else_clause, use_node):
+                    return True
+            elif parent and parent.type == "else_clause":
+                # free is in the 'else' branch — check if use is in the 'then' body
+                if_gparent = parent.parent
+                if if_gparent and if_gparent.type == "if_statement":
+                    for child in if_gparent.children:
+                        if child.type == "compound_statement" and _node_contains(child, use_node):
+                            return True
+        cur = cur.parent
+    return False
+
+
+def _free_is_in_returning_branch(free_node: Node, use_node: Node) -> bool:
+    """Check if free_node is inside an if-block that also contains a return/exit
+    statement, AND the use_node is AFTER that entire if_statement.
+    Pattern: if(err) { free(p); return; }  use(p); — use is safe."""
+    cur = free_node.parent
+    while cur:
+        if cur.type == "compound_statement":
+            parent = cur.parent
+            if parent and parent.type in ("if_statement", "else_clause"):
+                # Check if this compound has a return/exit/abort
+                has_exit = bool(find_nodes(cur, "return_statement"))
+                if not has_exit:
+                    has_exit = bool(find_nodes(cur, "goto_statement"))
+                if not has_exit:
+                    for call in find_nodes(cur, "call_expression"):
+                        cname = get_call_name(call)
+                        if cname in ("exit", "_exit", "abort", "_Exit", "die"):
+                            has_exit = True
+                            break
+                if has_exit:
+                    # Find the enclosing if_statement
+                    if_stmt = parent if parent.type == "if_statement" else parent.parent
+                    if if_stmt and if_stmt.type == "if_statement":
+                        # Use must be AFTER the entire if_statement
+                        if use_node.start_byte > if_stmt.end_byte:
+                            return True
+            # Stop at function body level
+            if parent and parent.type == "function_definition":
+                break
+        cur = cur.parent
+    return False
+
+
+def _is_shadowed_in_inner_scope(ident_node: Node, func_body: Node) -> bool:
+    """Check if ident_node's variable name is re-declared in an inner
+    compound_statement (not the function body) before the use point.
+    Pattern: free(p); { char* p = malloc(128); use(p); } — inner p shadows."""
+    var_name = get_node_text(ident_node)
+    cur = ident_node.parent
+    while cur and cur != func_body:
+        if cur.type == "compound_statement":
+            for decl in find_nodes(cur, "declaration"):
+                if decl.start_byte >= ident_node.start_byte:
+                    continue
+                for init in find_nodes(decl, "init_declarator"):
+                    lhs = init.children[0] if init.children else None
+                    if lhs:
+                        for li in find_nodes(lhs, "identifier"):
+                            if get_node_text(li) == var_name and li.start_byte <= ident_node.start_byte:
+                                return True
+        cur = cur.parent
+    return False
+
+
 def _collect_free_and_delete(compound: Node) -> List[Tuple[str, int, Node]]:
     """Collect (var_name, byte_offset, node) for free(x) / delete x calls in a compound."""
     results = []
     for call in find_nodes(compound, "call_expression"):
         name = get_call_name(call)
-        if name == "free":
+        if name in FREE_LIKE_FUNCS:
             args = get_call_args(call)
             if args and is_identifier(args[0]):
                 results.append((get_node_text(args[0]), call.start_byte, call))
@@ -630,7 +750,7 @@ def _identifier_used_after(compound: Node, var_name: str, after_byte: int,
             grandparent = parent.parent
             if grandparent and grandparent.type == "call_expression":
                 fname = get_call_name(grandparent)
-                if fname == "free":
+                if fname in FREE_LIKE_FUNCS:
                     continue
         if parent and parent.type == "delete_expression":
             continue
@@ -639,6 +759,17 @@ def _identifier_used_after(compound: Node, var_name: str, after_byte: int,
             if parent.children and parent.children[0] == ident:
                 continue
         if parent and parent.type == "init_declarator":
+            continue
+        # Also skip if inside pointer_declarator within init_declarator (char* p = ...)
+        if parent and parent.type == "pointer_declarator":
+            gp = parent.parent
+            if gp and gp.type == "init_declarator":
+                continue
+        # Skip if inside sizeof() — compile-time, not a runtime dereference
+        if _has_ancestor_type(ident, "sizeof_expression"):
+            continue
+        # Skip if variable name is shadowed by an inner-scope declaration
+        if _is_shadowed_in_inner_scope(ident, compound):
             continue
         return ident
     return None
@@ -674,15 +805,39 @@ def rule_use_after_free(tree: Node, source_bytes: bytes, filename: str) -> Gener
                 if is_identifier(lhs) and is_identifier(rhs):
                     alias_map[get_node_text(lhs)] = get_node_text(rhs)
 
+        # Resolve transitive alias chains: if c->b and b->a, then c->a
+        for _ in range(10):
+            changed = False
+            for alias, target in list(alias_map.items()):
+                if target in alias_map and alias_map[target] != alias:
+                    alias_map[alias] = alias_map[target]
+                    changed = True
+            if not changed:
+                break
+
         frees = _collect_free_and_delete(body)
         reported_uses: Set[int] = set()  # track byte offsets of already-reported uses
         for var_name, free_byte, free_node in frees:
-            # Check the freed variable itself and all its aliases
+            # Check the freed variable itself, all its aliases, and the original it aliases
             names_to_check = [var_name] + [k for k, v in alias_map.items() if v == var_name]
+            # Reverse direction: if freed var is itself an alias, also check the original.
+            # Only follow if var_name is NOT reassigned after the free (otherwise the
+            # alias relationship was established post-free and is irrelevant).
+            if var_name in alias_map and \
+                    not _is_reassigned_between(body, var_name, free_byte, body.end_byte):
+                original = alias_map[var_name]
+                if original not in names_to_check:
+                    names_to_check.append(original)
+                # And all siblings (other aliases of the same original)
+                for k, v in alias_map.items():
+                    if v == original and k not in names_to_check:
+                        names_to_check.append(k)
             for check_name in names_to_check:
                 use = _identifier_used_after(body, check_name, free_byte)
                 if use and use.start_byte not in reported_uses and \
-                        not _is_reassigned_between(body, check_name, free_byte, use.start_byte):
+                        not _is_reassigned_between(body, check_name, free_byte, use.start_byte) and \
+                        not _are_in_exclusive_branches(free_node, use) and \
+                        not _free_is_in_returning_branch(free_node, use):
                     line, col = node_location(use)
                     free_line = node_location(free_node)[0]
                     via = f" (via alias '{check_name}')" if check_name != var_name else ""

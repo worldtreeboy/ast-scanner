@@ -18,12 +18,12 @@
  *   python3 c_cpp_treesitter_scanner.py test-files/uaf_comprehensive_test.c --all --jsonl 2>/dev/null
  *
  * === EXPECTED SUMMARY ===
- *   TP (True Positive)  = 31  (scanner correctly flags vulnerable code)
- *   TN (True Negative)  = 20  (scanner correctly stays silent on safe code)
- *   FP (False Positive)  = 10  (scanner flags safe code — known limitation)
- *   FN (False Negative)  = 13  (scanner misses vulnerable code — known limitation)
+ *   TP (True Positive)  = 33  (scanner correctly flags vulnerable code)
+ *   TN (True Negative)  = 26  (scanner correctly stays silent on safe code)
+ *   FP (False Positive)  =  3  (scanner flags safe code — known limitation)
+ *   FN (False Negative)  = 10  (scanner misses vulnerable code — known limitation)
  *
- *   Total MEM-USE-AFTER-FREE findings expected: 41 (= 31 TP + 10 FP)
+ *   Total MEM-USE-AFTER-FREE findings expected: 36 (= 33 TP + 3 FP)
  */
 
 #include <stdio.h>
@@ -294,13 +294,13 @@ void uaf_tp_evasive_2(int idx) {
     (void)c;
 }
 
-/* TP-25: sizeof(p) after free — scanner treats as use (technically not a
-   runtime dereference but scanner cannot distinguish) */
+/* TN-21 (was TP-25): sizeof(p) after free — sizeof is compile-time, not a
+   runtime dereference; scanner now correctly skips sizeof expressions */
 void uaf_tp_evasive_3(void) {
     point_t* p = (point_t*)malloc(sizeof(point_t));
     if (!p) return;
     free(p);
-    printf("size = %zu\n", sizeof(p));           /* TP: MEM-USE-AFTER-FREE — sizeof(p) references p */
+    printf("size = %zu\n", sizeof(p));           /* TN: sizeof(p) is compile-time — no finding */
 }
 
 /* TP-26: Freed pointer stored in array initializer */
@@ -589,24 +589,27 @@ void uaf_tn_nouse_1(void) {
 
 
 /* ============================================================================
- *  FALSE POSITIVES — Scanner flags but code is actually safe (10 cases)
+ *  FALSE POSITIVES — Scanner flags but code is actually safe (3 remaining)
  *
- *  All caused by lack of control-flow / branch analysis.
+ *  Most former FPs fixed by branch/return analysis; remaining 3 caused by
+ *  flag-guarded paths, switch fallthrough, and loop-break patterns.
  * ============================================================================*/
 
-/* FP-1: Free in if-branch, use in else-branch (exclusive paths) */
+/* TN-22 (was FP-1): Free in if-branch, use in else-branch (exclusive paths)
+   Scanner now detects mutually exclusive if/else branches */
 void uaf_fp_branch_1(int cond) {
     char* p = (char*)malloc(64);
     if (!p) return;
     if (cond) {
         free(p);
     } else {
-        printf("%s\n", p);                       /* FP: MEM-USE-AFTER-FREE — branches exclusive */
+        printf("%s\n", p);                       /* TN: branches exclusive — no finding */
         free(p);
     }
 }
 
-/* FP-2: Free in error-return branch, use on normal path */
+/* TN-23 (was FP-2): Free in error-return branch, use on normal path
+   Scanner now detects error-return pattern (free+return in if-block) */
 void uaf_fp_errret_1(int err) {
     char* p = (char*)malloc(64);
     if (!p) return;
@@ -614,7 +617,7 @@ void uaf_fp_errret_1(int err) {
         free(p);
         return;
     }
-    printf("%s\n", p);                           /* FP: MEM-USE-AFTER-FREE — free path returns */
+    printf("%s\n", p);                           /* TN: free path returns — no finding */
     free(p);
 }
 
@@ -681,40 +684,44 @@ void uaf_fp_loop_1(void) {
     }
 }
 
-/* FP-7: sizeof(ptr) after free — sizeof is compile-time, no runtime deref */
+/* TN-24 (was FP-7): sizeof(ptr) after free — sizeof is compile-time, no runtime deref
+   Scanner now skips identifiers inside sizeof_expression */
 void uaf_fp_sizeof_1(void) {
     int* p = (int*)malloc(sizeof(int));
     if (!p) return;
     free(p);
-    size_t sz = sizeof(p);                       /* FP: MEM-USE-AFTER-FREE — sizeof is not a real use */
+    size_t sz = sizeof(p);                       /* TN: sizeof is compile-time — no finding */
     (void)sz;
 }
 
-/* FP-8: Variable shadowing — inner scope declares same name */
+/* TN-25 (was FP-8): Variable shadowing — inner scope declares same name
+   Scanner now detects inner-scope re-declaration and skips shadowed uses */
 void uaf_fp_shadow_1(void) {
     char* p = (char*)malloc(64);
     if (!p) return;
     free(p);
     {
-        char* p = (char*)malloc(128);            /* FP: MEM-USE-AFTER-FREE — inner p shadows outer */
+        char* p = (char*)malloc(128);            /* TN: inner p shadows outer — no finding */
         if (!p) return;
         printf("%s\n", p);
         free(p);
     }
 }
 
-/* FP-9: Free in null-check guard for second alloc */
+/* TN-26 (was FP-9): Free in null-check guard for second alloc
+   Scanner now detects error-return pattern (free+return in if-block) */
 void uaf_fp_guard_alloc_1(void) {
     char* a = (char*)malloc(32);
     if (!a) return;
     char* b = (char*)malloc(32);
     if (!b) { free(a); return; }
-    use_ptr(a);                                  /* FP: MEM-USE-AFTER-FREE — guard frees a but returns */
+    use_ptr(a);                                  /* TN: guard frees a but returns — no finding */
     free(a);
     free(b);
 }
 
-/* FP-10: Multiple error-return paths each free then return */
+/* TN-27 (was FP-10): Multiple error-return paths each free then return
+   Scanner now detects error-return pattern (free+return in if-block) */
 int uaf_fp_multi_guard_1(void) {
     char* buf = (char*)malloc(256);
     if (!buf) return -1;
@@ -726,22 +733,21 @@ int uaf_fp_multi_guard_1(void) {
         free(buf);
         return 2;
     }
-    use_ptr(buf);                                /* FP: MEM-USE-AFTER-FREE — all free paths return */
+    use_ptr(buf);                                /* TN: all free paths return — no finding */
     free(buf);
     return 0;
 }
 
 
 /* ============================================================================
- *  FALSE NEGATIVES — Scanner MISSES these (13 cases)
+ *  FALSE NEGATIVES — Scanner MISSES these (10 remaining)
  *
- *  Categories:
+ *  3 former FNs (cast, multi-hop chain, post-free alias) now detected as TP.
+ *  Remaining categories:
  *    crossfunc — free in another function
  *    wrapper   — free via wrapper / function pointer / macro
  *    expr_free — free argument is not a simple identifier
  *    realloc   — implicit free via realloc
- *    cast      — alias via void* cast
- *    chain     — multi-hop alias chains (> 1 level)
  *    struct    — pointer stored in struct field
  *    dblptr    — free via double pointer dereference
  * ============================================================================*/
@@ -809,33 +815,36 @@ void uaf_fn_realloc_1(void) {
     free(p);
 }
 
-/* FN-7: Free through void* cast — different name */
+/* TP-32 (was FN-7): Free through void* cast — reverse alias resolution
+   Scanner now follows reverse aliases: free(vp) where vp=p → also check p */
 void uaf_fn_cast_1(void) {
     int* p = (int*)malloc(sizeof(int) * 10);
     if (!p) return;
     void* vp = p;
     free(vp);
-    printf("%d\n", p[0]);                        /* FN: freed as vp, p is same address */
+    printf("%d\n", p[0]);                        /* TP: MEM-USE-AFTER-FREE via reverse alias */
 }
 
-/* FN-8: Multi-hop alias chain: a -> b -> c (scanner tracks 1 level) */
+/* TP-33 (was FN-8): Multi-hop alias chain: a -> b -> c
+   Scanner now resolves transitive alias chains: c→b→a collapses to c→a */
 void uaf_fn_chain_1(void) {
     char* a = (char*)malloc(64);
     if (!a) return;
     char* b = a;
     char* c = b;
     free(a);
-    printf("%s\n", c);                           /* FN: c -> b -> a */
+    printf("%s\n", c);                           /* TP: MEM-USE-AFTER-FREE via transitive alias */
 }
 
-/* FN-9: Alias created from another alias after free */
+/* TP-34 (was FN-9): Alias created from another alias after free
+   Scanner now resolves transitive chains: q→saved→p collapses to q→p */
 void uaf_fn_chain_2(void) {
     char* p = (char*)malloc(64);
     if (!p) return;
     char* saved = p;
     free(p);
     char* q = saved;
-    printf("%s\n", q);                           /* FN: q = saved = p */
+    printf("%s\n", q);                           /* TP: MEM-USE-AFTER-FREE via transitive alias */
 }
 
 /* FN-10: Pointer stored in struct field, freed via original name */
